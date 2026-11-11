@@ -86,3 +86,12 @@ def test_due_across_cutover() -> None:
 def test_invalid_revision_order() -> None:
     with pytest.raises(ScheduleError):
         next_boundary_rev((Revision(OLD, kyiv(2026, 1, 1)),), kyiv(2026, 1, 2))
+
+
+def test_previous_boundary_rev_across_cutover() -> None:
+    from newsdigest.scheduling import previous_boundary_rev
+
+    revs = apply_schedule_change((Revision(OLD),), NEW, kyiv(2026, 11, 10, 12))
+    assert previous_boundary_rev(revs, kyiv(2026, 11, 10, 12)) == kyiv(2026, 11, 10, 8)
+    assert previous_boundary_rev(revs, kyiv(2026, 11, 10, 22)) == kyiv(2026, 11, 10, 21)
+    assert previous_boundary_rev(revs, kyiv(2026, 11, 11, 1)) == kyiv(2026, 11, 10, 23)

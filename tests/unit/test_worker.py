@@ -361,3 +361,73 @@ async def test_newer_run_held_behind_uncertain_t71(tmp_path: Path) -> None:
     statuses = [r.status for r in h.runs()]
     assert statuses == ["uncertain", "held"]
     assert h.gateway.sent == []
+
+
+async def test_manual_run_without_publications_starts_at_last_boundary_d029(
+    tmp_path: Path,
+) -> None:
+    h = Harness(tmp_path, kyiv(2026, 11, 10, 12))
+    with_delivery(h)
+    h.worker.initialize()
+    record = await h.worker.run_now(config().target_channels[0])
+    assert record is not None and record.manual
+    assert (record.window_start_utc, record.window_end_utc) == (
+        kyiv(2026, 11, 10, 8),
+        kyiv(2026, 11, 10, 12),
+    )
+    assert record.status == "published"
+
+
+async def test_next_scheduled_window_starts_after_manual_run_d029(tmp_path: Path) -> None:
+    h = Harness(tmp_path, kyiv(2026, 11, 10, 12))
+    with_delivery(h)
+    h.worker.initialize()
+    await h.worker.run_now(config().target_channels[0])
+    h.clock.now = kyiv(2026, 11, 10, 21, 1)
+    await h.worker.tick()
+    scheduled = [r for r in h.runs() if not r.manual]
+    assert [(r.window_start_utc, r.window_end_utc) for r in scheduled] == [
+        (kyiv(2026, 11, 10, 12), kyiv(2026, 11, 10, 21))
+    ]
+
+
+async def test_manual_run_uses_db_last_published_end(tmp_path: Path) -> None:
+    h = Harness(tmp_path, kyiv(2026, 11, 10, 12))
+    with_delivery(h)
+    h.worker._published_end = lambda _cid: kyiv(2026, 11, 10, 10, 30)
+    h.worker.initialize()
+    record = await h.worker.run_now(config().target_channels[0])
+    assert record is not None
+    assert record.window_start_utc == kyiv(2026, 11, 10, 10, 30)
+
+
+async def test_manual_run_nothing_new(tmp_path: Path) -> None:
+    h = Harness(tmp_path, kyiv(2026, 11, 10, 12))
+    with_delivery(h)
+    h.worker._published_end = lambda _cid: kyiv(2026, 11, 10, 12)
+    h.worker.initialize()
+    assert await h.worker.run_now(config().target_channels[0]) is None
+    assert h.gateway.history_calls == 0
+
+
+async def test_failed_run_does_not_extend_next_window(tmp_path: Path) -> None:
+    """Невдалий run не рахується «покритим», але й не тягне вікно назад (D-008/D-029)."""
+    h = Harness(tmp_path, kyiv(2026, 11, 10, 12))
+    with_builder(h, provider=False)
+    h.worker.initialize()
+    h.clock.now = kyiv(2026, 11, 10, 21, 1)
+    await h.worker.tick()
+    h.clock.now = kyiv(2026, 11, 11, 8, 1)
+    await h.worker.tick()
+    windows = [(r.window_start_utc, r.window_end_utc) for r in h.runs()]
+    assert windows[-1] == (kyiv(2026, 11, 10, 21), kyiv(2026, 11, 11, 8))
+
+
+async def test_manual_request_file_is_picked_by_worker(tmp_path: Path) -> None:
+    h = Harness(tmp_path, kyiv(2026, 11, 10, 12))
+    with_delivery(h)
+    h.worker.initialize()
+    h.store.request_manual_run("news", h.clock())
+    await h.worker.tick()
+    assert [r.manual for r in h.runs()] == [True]
+    assert h.store.take_manual_requests() == []

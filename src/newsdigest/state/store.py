@@ -203,6 +203,13 @@ class GuardsState(StateModel):
         ]
 
 
+class ManualRequest(StateModel):
+    """Запит ручного прогону від CLI для запущеного worker (D-029)."""
+
+    channel_id: str
+    requested_at_utc: AwareDatetime
+
+
 class Heartbeat(StateModel):
     at_utc: AwareDatetime
     pid: int
@@ -253,6 +260,33 @@ class StateStore:
 
     def save_guards(self, state: GuardsState) -> None:
         self._save("delivery_guards.json", state)
+
+    @property
+    def requests_dir(self) -> Path:
+        return self.directory / "requests"
+
+    def request_manual_run(self, channel_id: str, at: datetime) -> Path:
+        """Запис запиту окремим файлом: CLI не чіпає файли стану, якими володіє worker."""
+        path = self.requests_dir / f"manual-{channel_id}.json"
+        write_json_atomic(
+            path, ManualRequest(channel_id=channel_id, requested_at_utc=at).model_dump(mode="json")
+        )
+        return path
+
+    def take_manual_requests(self) -> list[ManualRequest]:
+        """Забирає (і видаляє) запити ручного прогону. Пошкоджені файли відкидаються."""
+        result: list[ManualRequest] = []
+        if not self.requests_dir.exists():
+            return result
+        for path in sorted(self.requests_dir.glob("manual-*.json")):
+            try:
+                data = read_json_checked(path)
+                if data is not None:
+                    result.append(ManualRequest.model_validate(data))
+            except (StateCorruptError, ValidationError):
+                pass
+            path.unlink(missing_ok=True)
+        return result
 
     def load_heartbeat(self) -> Heartbeat | None:
         return self._load_optional("heartbeat.json", Heartbeat)

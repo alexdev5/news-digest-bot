@@ -127,3 +127,15 @@ def used_message_ids(engine: Engine, destination_peer_id: int) -> set[int]:
     )
     with engine.connect() as conn:
         return {int(row[0]) for row in conn.execute(query)}
+
+
+def last_published_window_end(engine: Engine, channel_id: str) -> datetime | None:
+    """Кінець вікна останнього опублікованого випуску каналу (D-029) або None."""
+    from sqlalchemy import func
+
+    query = select(func.max(_TABLE.c.window_end_utc)).where(
+        _TABLE.c.target_channel_id == channel_id
+    )
+    with engine.connect() as conn:
+        value = conn.execute(query).scalar()
+    return value if isinstance(value, datetime) else None

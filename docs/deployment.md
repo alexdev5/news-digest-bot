@@ -91,6 +91,18 @@ Crypto-bot і його стек `postgres` не використовуються
 `… run --rm app digest scan --config /config/config.json --channel <id>` — теж
 лише при зупиненому worker.
 
+## Ручний прогін (D-029)
+
+Сканує джерела, збирає випуск і **публікує** вікно від останньої публікації (або
+найближчої минулої межі) до поточного моменту:
+
+```bash
+docker compose -f docker-compose.prod.yml --profile worker exec app digest run-now --config /config/config.json --channel <id>
+```
+
+Якщо worker працює (звичайний стан), команда передає йому запит, і він виконає прогін
+протягом ~30 секунд; результат — у `digest status`. Локально: `.\run.cmd run-now --channel <id>`.
+
 ## Публікація (етап 5)
 
 Коли worker запущено й задано ключ OpenAI, на кожній межі він: сканує → збирає

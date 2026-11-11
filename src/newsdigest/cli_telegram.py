@@ -116,6 +116,53 @@ def load_published_keys(channel_id: str) -> set[tuple[object, ...]] | None:
         return None
 
 
+def build_worker(
+    cfg: AppConfig,
+    config_path: Path,
+    paths: Paths,
+    settings: TelegramSettings,
+    store: StateStore,
+) -> Any:
+    """Worker з усіма залежностями: сканер, AI, доставка, БД (для run і run-now)."""
+    from newsdigest.config import load_config
+    from newsdigest.delivery import Delivery, sql_part_store_factory
+    from newsdigest.digest_runner import (
+        DigestBuilder,
+        default_engine_factory,
+        default_provider_factory,
+    )
+    from newsdigest.storage.published_repo import last_published_window_end
+    from newsdigest.worker import RunExecutor, Worker
+
+    cache = CacheManager(paths.cache_dir)
+    limiter = RateLimiter(store, utcnow)
+    factory = gateway_factory(paths, settings)
+    engine_factory = default_engine_factory()
+
+    def published_end(channel_id: str) -> datetime | None:
+        engine = engine_factory()
+        if engine is None:
+            return None
+        try:
+            return last_published_window_end(engine, channel_id)
+        finally:
+            engine.dispose()
+
+    return Worker(
+        cfg,
+        store,
+        cache,
+        RunExecutor(store, cache, factory, limiter, utcnow),
+        utcnow,
+        builder=DigestBuilder(store, cache, default_provider_factory(), engine_factory, utcnow),
+        prompts=load_config(config_path).prompts,
+        delivery=Delivery(
+            store, cache, factory, limiter, sql_part_store_factory(engine_factory), utcnow
+        ),
+        published_end=published_end,
+    )
+
+
 def register(app: typer.Typer, load: Callable[[Path], AppConfig]) -> None:
     @app.command("login")
     def login(
@@ -474,22 +521,12 @@ def register(app: typer.Typer, load: Callable[[Path], AppConfig]) -> None:
     @app.command("run")
     def run(config: ConfigOption = DEFAULT_CONFIG) -> None:
         """Worker: чекає планових меж і сканує вікна. Між межами джерела не читає."""
-        from newsdigest.config import load_config
-        from newsdigest.delivery import Delivery, sql_part_store_factory
-        from newsdigest.digest_runner import (
-            DigestBuilder,
-            default_engine_factory,
-            default_provider_factory,
-        )
         from newsdigest.logging_setup import setup_logging
-        from newsdigest.worker import RunExecutor, Worker
 
         setup_logging()
         cfg = load(config)
-        prompts = load_config(config).prompts
         paths, settings = telegram_env()
         store = StateStore(paths.state_dir)
-        cache = CacheManager(paths.cache_dir)
         lock = locked(store)
 
         async def main() -> None:
@@ -498,29 +535,7 @@ def register(app: typer.Typer, load: Callable[[Path], AppConfig]) -> None:
             for sig in (signal.SIGTERM, signal.SIGINT):
                 with suppress(NotImplementedError):  # Windows: без сигналів
                     loop.add_signal_handler(sig, stop.set)
-            limiter = RateLimiter(store, utcnow)
-            executor = RunExecutor(store, cache, gateway_factory(paths, settings), limiter, utcnow)
-            builder = DigestBuilder(
-                store, cache, default_provider_factory(), default_engine_factory(), utcnow
-            )
-            delivery = Delivery(
-                store,
-                cache,
-                gateway_factory(paths, settings),
-                limiter,
-                sql_part_store_factory(default_engine_factory()),
-                utcnow,
-            )
-            worker = Worker(
-                cfg,
-                store,
-                cache,
-                executor,
-                utcnow,
-                builder=builder,
-                prompts=prompts,
-                delivery=delivery,
-            )
+            worker = build_worker(cfg, config, paths, settings, store)
             await worker.run_forever(stop)
 
         try:
@@ -529,6 +544,55 @@ def register(app: typer.Typer, load: Callable[[Path], AppConfig]) -> None:
             raise _exit(ExitCode.STATE_ERROR, f"Стан пошкоджений: {exc}") from exc
         finally:
             lock.release()
+
+    @app.command("run-now")
+    def run_now(
+        config: ConfigOption = DEFAULT_CONFIG,
+        channel: Annotated[str, typer.Option(help="id цільового каналу.")] = "",
+    ) -> None:
+        """Ручний прогін і ПУБЛІКАЦІЯ: вікно від останньої публікації (або найближчої
+        минулої межі) до зараз (D-029). Якщо worker запущено — передає йому запит."""
+        from newsdigest.logging_setup import setup_logging
+
+        cfg = load(config)
+        if not channel:
+            raise _exit(ExitCode.USAGE_ERROR, "Вкажіть --channel <id>.")
+        target = _select(cfg, channel)
+        if not target.enabled:
+            raise _exit(ExitCode.USAGE_ERROR, f"Канал {target.id} вимкнений у конфігу.")
+        paths, settings = telegram_env()
+        store = StateStore(paths.state_dir)
+        lock = ProcessLock(store.lock_path)
+        try:
+            lock.acquire()
+        except LockBusyError:
+            store.request_manual_run(target.id, utcnow())
+            typer.echo(
+                "Worker запущено — запит передано йому, виконає протягом ~30 с. "
+                "Результат: digest status."
+            )
+            return
+
+        setup_logging("WARNING")
+        try:
+            worker = build_worker(cfg, config, paths, settings, store)
+            worker.initialize()
+            record = asyncio.run(worker.run_now(target))
+        finally:
+            lock.release()
+        if record is None:
+            typer.echo("Нових дописів немає: усе вже опубліковано до цього моменту.")
+            return
+        tz = effective_channel(cfg, target).timezone
+        typer.echo(
+            f"{target.id}: {record.window_start_utc.astimezone(tz):%d.%m %H:%M} → "
+            f"{record.window_end_utc.astimezone(tz):%d.%m %H:%M} ({tz.key}), "
+            f"статус {record.status}" + (f", {record.error_code}" if record.error_code else "")
+        )
+        if record.events is not None:
+            typer.echo(f"  подій: {record.events}, повідомлень: {record.parts}")
+        if record.status not in ("published",):
+            raise typer.Exit(ExitCode.TELEGRAM_ERROR)
 
     @app.command("status")
     def status(config: ConfigOption = DEFAULT_CONFIG) -> None:

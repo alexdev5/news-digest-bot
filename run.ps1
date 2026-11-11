@@ -74,6 +74,7 @@ function Show-Help {
     Write-Host "  preview [args]   Scan + build a digest without publishing: preview --channel <id>"
     Write-Host "  ai-check         Check OPENAI_API_KEY and model access (no paid call)"
     Write-Host "  reconcile [args] Check uncertain sends, resume series: reconcile --channel <id>"
+    Write-Host "  run-now [args]   Scan + AI + PUBLISH since last publication: run-now --channel <id>"
     Write-Host "  worker           Run the scheduler worker in the foreground"
     Write-Host "  status           Channel state, recent runs, heartbeat"
 }
@@ -184,6 +185,10 @@ switch ($Command) {
     "reconcile" {
         $ConfigPath = Get-ConfigPath
         Invoke-App digest reconcile --config $ConfigPath @Rest
+    }
+    "run-now" {
+        $ConfigPath = Get-ConfigPath
+        Invoke-App digest run-now --config $ConfigPath @Rest
     }
     "worker" {
         $ConfigPath = Get-ConfigPath

@@ -63,6 +63,7 @@ Telegram (needs TELEGRAM_API_ID/HASH in .env):
   preview [args]   Scan + build a digest without publishing: preview --channel <id>
   ai-check         Check OPENAI_API_KEY and model access (no paid call)
   reconcile [args] Check uncertain sends, resume series: reconcile --channel <id>
+  run-now [args]   Scan + AI + PUBLISH since last publication: run-now --channel <id>
   worker           Run the scheduler worker in the foreground
   status           Channel state, recent runs, heartbeat
 EOF
@@ -114,6 +115,7 @@ case "$command" in
   preview) app digest preview --config "$(config_path)" "$@" ;;
   ai-check) app_no_db digest ai-check --config "$(config_path)" ;;
   reconcile) app digest reconcile --config "$(config_path)" "$@" ;;
+  run-now) app digest run-now --config "$(config_path)" "$@" ;;
   worker) app digest run --config "$(config_path)" ;;
   status) app_no_db digest status --config "$(config_path)" ;;
   *)

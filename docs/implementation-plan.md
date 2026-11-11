@@ -249,6 +249,9 @@ schema, `all_unique` та per-part uniqueness проходять на синте
   кеш run видаляється. Без БД send не робиться (`db_unavailable`).
 - CLI `digest reconcile --channel <id>`, `.\run.cmd reconcile`; `status` показує
   невирішені частини.
+- D-029: `digest run-now --channel <id>` (напряму або запитом до worker через
+  `/state/requests/`), початок вікна — від уже покритого (`last_published_window_end`
+  у БД + зібрані/публіковані runs у стані).
 - 210 тестів у Docker.
 
 Не зроблено:

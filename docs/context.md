@@ -92,6 +92,15 @@ JSON-конфігу зі своїми джерелами, промптом і р
 
 ## Журнал
 
+### 2026-11-11 — ручний прогін run-now (D-029), гілка `feature/manual-run`
+
+- Власник: ручна команда прогону від останньої публікації (з БД); без публікацій — від
+  найближчої минулої межі; наступна планова межа бере вікно від кінця ручного.
+- Реалізовано в гілці `feature/manual-run`: `run-now`, `covered_until` у worker,
+  запити `/state/requests/manual-<id>.json` для запущеного worker.
+- Вибір асистента: «покрите» = max(кінець вікна в БД, кінці runs зі статусами
+  ready/published/partial/uncertain/held); failed/skipped не рахуються.
+
 ### 2026-11-11 — перший живий AI-прохід: ai_invalid_answer
 
 - `ai-check` для `gpt-6.1-terra` — OK; `preview` (82 дописи) впав з `ai_invalid_answer`.

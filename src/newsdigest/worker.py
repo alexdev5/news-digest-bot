@@ -28,6 +28,7 @@ from newsdigest.scheduling import (
     apply_schedule_change,
     due_boundaries_rev,
     next_boundary_rev,
+    previous_boundary_rev,
     window_for_boundary_rev,
 )
 from newsdigest.state.store import (
@@ -49,6 +50,7 @@ GatewayFactory = Callable[[], AbstractAsyncContextManager[TelegramGateway]]
 
 MAX_IDLE_SECONDS = 30.0
 PUBLISHABLE = ("ready", "partial", "uncertain", "held")
+COVERING_STATUSES = ("ready", "published", "partial", "uncertain", "held")
 RUN_STATUSES = ("published", "partial", "uncertain", "held", "failed")
 DEFAULT_RUN_TIMEOUT_SECONDS = 600
 
@@ -139,8 +141,10 @@ class Worker:
         builder: DigestBuilder | None = None,
         prompts: dict[str, str] | None = None,
         delivery: Delivery | None = None,
+        published_end: Callable[[str], datetime | None] | None = None,
     ) -> None:
         self._delivery = delivery
+        self._published_end = published_end
         self._builder = builder
         self._prompts = prompts or {}
         self._config = config
@@ -150,7 +154,7 @@ class Worker:
         self._clock = clock
         self._channel_locks: dict[str, asyncio.Lock] = {}
         self._active: set[str] = set()
-        self._resume: dict[str, list[datetime]] = {}
+        self._resume: dict[str, list[tuple[datetime, Window]]] = {}
 
     def _enabled(self) -> list[TargetChannel]:
         return [c for c in self._config.target_channels if c.enabled]
@@ -190,10 +194,11 @@ class Worker:
         """Run, перерваний аварією, продовжується в межах grace; старіший — failed (v4 §15)."""
         grace = timedelta(seconds=effective_channel(self._config, channel).misfire_grace_seconds)
         for run in state.runs:
-            if run.status not in ("materialized", "scanning") or run.manual:
+            if run.status not in ("materialized", "scanning"):
                 continue
             if now - run.boundary_utc <= grace:
-                self._resume.setdefault(channel.id, []).append(run.boundary_utc)
+                window = Window(run.window_start_utc, run.window_end_utc)
+                self._resume.setdefault(channel.id, []).append((run.boundary_utc, window))
             else:
                 run.status = "failed"
                 run.error_code = "interrupted"
@@ -211,6 +216,7 @@ class Worker:
         return max(soonest, 0.5)
 
     async def tick(self) -> None:
+        await self._handle_manual_requests()
         now = self._clock()
         await asyncio.gather(*(self._process_channel(c, now) for c in self._enabled()))
         self._cleanup_cache(self._clock())
@@ -235,11 +241,9 @@ class Worker:
             if state is None:
                 return
             revisions = state.revision_tuple()
-            for boundary in sorted(self._resume.pop(channel.id, [])):
-                window = window_for_boundary_rev(revisions, boundary, state.scan_start_at_utc)
-                if window is not None:
-                    log.info("run_resumed", extra={"channel": channel.id})
-                    await self._execute(channel, boundary, window)
+            for boundary, window in sorted(self._resume.pop(channel.id, [])):
+                log.info("run_resumed", extra={"channel": channel.id})
+                await self._execute(channel, boundary, window)
             runtime = self._store.load_runtime()
             state = runtime.channels[channel.id]
             plan = due_boundaries_rev(
@@ -255,8 +259,72 @@ class Worker:
                 state.last_materialized_utc = boundary
             self._store.save_runtime(runtime)
             for boundary in plan.run:
-                window = window_for_boundary_rev(revisions, boundary, state.scan_start_at_utc)
-                await self._materialize(channel, boundary, window)
+                planned = window_for_boundary_rev(revisions, boundary, state.scan_start_at_utc)
+                clipped = await self._after_covered(channel.id, planned) if planned else None
+                await self._materialize(channel, boundary, clipped)
+
+    async def covered_until(self, channel_id: str) -> datetime | None:
+        """D-029: до якого моменту новини вже опубліковані або в роботі.
+
+        Максимум із кінця останнього опублікованого вікна (БД) і кінців вікон runs,
+        що вже зібрані або публікуються. Невдалі runs (failed/skipped) не рахуються,
+        тож пропуск ніколи не розширює вікно назад.
+        """
+        candidates: list[datetime] = []
+        if self._published_end is not None:
+            from_db = await asyncio.to_thread(self._published_end, channel_id)
+            if from_db is not None:
+                candidates.append(from_db)
+        state = self._store.load_runtime().channels.get(channel_id)
+        if state is not None:
+            candidates.extend(r.window_end_utc for r in state.runs if r.status in COVERING_STATUSES)
+        return max(candidates) if candidates else None
+
+    async def _after_covered(self, channel_id: str, window: Window) -> Window | None:
+        covered = await self.covered_until(channel_id)
+        if covered is None or covered <= window.start_utc:
+            return window
+        if covered >= window.end_utc:
+            log.info("window_already_covered", extra={"channel": channel_id})
+            return None
+        return Window(covered, window.end_utc)
+
+    def manual_window(
+        self, channel: TargetChannel, now: datetime, covered: datetime | None
+    ) -> Window | None:
+        """Вікно ручного прогону: від max(найближча минула межа, вже покрите, scan_start) до now."""
+        state = self._store.load_runtime().channels.get(channel.id)
+        trigger = effective_channel(self._config, channel).trigger
+        revisions = state.revision_tuple() if state is not None else (Revision(trigger),)
+        start = max(
+            previous_boundary_rev(revisions, now),
+            channel.scan_start_at,
+            covered or channel.scan_start_at,
+        )
+        return Window(start, now) if start < now else None
+
+    async def run_now(self, channel: TargetChannel) -> RunRecord | None:
+        """Ручний прогін (D-029): scan → AI → публікація вікна [початок, зараз)."""
+        lock = self._channel_locks.setdefault(channel.id, asyncio.Lock())
+        async with lock:
+            now = self._clock()
+            window = self.manual_window(channel, now, await self.covered_until(channel.id))
+            if window is None:
+                log.info("manual_run_nothing_new", extra={"channel": channel.id})
+                return None
+            log.info("manual_run_started", extra={"channel": channel.id})
+            await self._execute(channel, now, window, manual=True)
+            key = digest_key(channel.id, window)
+            return self._store.load_runtime().channels[channel.id].find_run(key)
+
+    async def _handle_manual_requests(self) -> None:
+        enabled = {c.id: c for c in self._enabled()}
+        for request in self._store.take_manual_requests():
+            channel = enabled.get(request.channel_id)
+            if channel is None:
+                log.warning("manual_request_unknown_channel", extra={"channel": request.channel_id})
+                continue
+            await self.run_now(channel)
 
     async def _materialize(
         self, channel: TargetChannel, boundary: datetime, window: Window | None
@@ -268,7 +336,9 @@ class Worker:
         if window is not None:
             await self._execute(channel, boundary, window)
 
-    async def _execute(self, channel: TargetChannel, boundary: datetime, window: Window) -> None:
+    async def _execute(
+        self, channel: TargetChannel, boundary: datetime, window: Window, manual: bool = False
+    ) -> None:
         now = self._clock()
         key = digest_key(channel.id, window)
         runtime = self._store.load_runtime()
@@ -281,6 +351,7 @@ class Worker:
             status="scanning",
             created_at_utc=now,
             updated_at_utc=now,
+            manual=manual,
         )
         record.status = "scanning"
         record.updated_at_utc = now

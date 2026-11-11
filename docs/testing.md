@@ -27,7 +27,8 @@ M26, M27, схема БД частин і міграція, CLI. Telegram — fa
 | Тести | Перенесення в чинний контракт |
 | --- | --- |
 | T01–T10 | Без зміни сенсу: незалежні розклади, межі, DST, revisions, без rolling catch-up |
-| T11–T22 | Без зміни сенсу: scheduled-only scan, повна пагінація, edits/media/coverage |
+| T11–T19, T21–T22 | Без зміни сенсу: scheduled-only scan, повна пагінація, media/coverage |
+| T20 | **Змінено D-024:** редакція після cutoff не виключається, береться поточна версія; рахується `edited_after_cutoff` |
 | T23–T24 | Ready/preview не створюють publication rows; preview очищається |
 | T25 | Один підтверджений Telegram-пост → один рядок; N частин → N confirmed rows |
 | T26 | Немає raw/evidence/drafts у БД та backups, також у metadata частин |

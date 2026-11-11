@@ -30,7 +30,7 @@ from newsdigest.settings import (
     telegram_settings_from_env,
 )
 from newsdigest.state import LockBusyError, ProcessLock, StateCorruptError, StateStore
-from newsdigest.telegram.rate_limit import RateLimiter
+from newsdigest.telegram.rate_limit import RateLimiter, flood_wait_seconds
 from newsdigest.telegram.scanner import HistoryScanner
 from newsdigest.telegram.types import FloodWaitPause, TelegramError, TelegramGateway
 
@@ -79,15 +79,32 @@ def _select(config: AppConfig, channel_id: str) -> TargetChannel:
 
 def register(app: typer.Typer, load: Callable[[Path], AppConfig]) -> None:
     @app.command("login")
-    def login() -> None:
+    def login(
+        qr: Annotated[
+            bool, typer.Option("--qr", help="Вхід через QR-код замість коду з Telegram.")
+        ] = False,
+    ) -> None:
         """Інтерактивний вхід у Telegram-акаунт (worker має бути зупинений)."""
-        from newsdigest.telegram.telethon_gateway import interactive_login
+        from newsdigest.telegram.telethon_gateway import interactive_login, interactive_qr_login
 
         paths, settings = telegram_env()
         store = StateStore(paths.state_dir)
         lock = locked(store)
         try:
-            account = asyncio.run(interactive_login(paths, settings))
+            flow = interactive_qr_login if qr else interactive_login
+            account = asyncio.run(flow(paths, settings))
+        except TelegramError as exc:
+            raise _exit(ExitCode.TELEGRAM_ERROR, f"Вхід не виконано: {exc}") from exc
+        except Exception as exc:
+            seconds = flood_wait_seconds(exc)
+            if seconds is not None:
+                raise _exit(
+                    ExitCode.TELEGRAM_ERROR,
+                    f"Telegram тимчасово обмежив запити коду: зачекайте {seconds} с.",
+                ) from exc
+            if type(exc).__module__.startswith("telethon"):
+                raise _exit(ExitCode.TELEGRAM_ERROR, f"Telegram: {type(exc).__name__}") from exc
+            raise
         finally:
             lock.release()
         if account.is_bot:
@@ -238,6 +255,11 @@ def register(app: typer.Typer, load: Callable[[Path], AppConfig]) -> None:
             for source_id, status in outcome.summary.statuses.items():
                 typer.echo(f"  {source_id}: {status}")
             typer.echo(f"  дописів у вікні: {outcome.summary.in_window}")
+            if outcome.summary.edited_after_cutoff:
+                typer.echo(
+                    "  з них відредаговано після межі (взято поточну версію): "
+                    f"{outcome.summary.edited_after_cutoff}"
+                )
             for reason, count in outcome.summary.excluded.items():
                 typer.echo(f"  виключено ({reason}): {count}")
         if keep:

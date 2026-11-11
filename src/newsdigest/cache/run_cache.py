@@ -46,6 +46,7 @@ class SourceProgress(CacheModel):
     fetched: int = 0
     in_window: int = 0
     excluded: dict[str, int] = Field(default_factory=dict)
+    edited_after_cutoff: int = 0
     error_code: str | None = None
 
 

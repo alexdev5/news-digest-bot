@@ -8,6 +8,7 @@ dependencies = [
     "alembic>=1.14",
     "psycopg[binary]>=3.2",
     "pydantic>=2.9,<3",
+    "qrcode>=7.4",
     "sqlalchemy>=2.0.36",
     "telethon>=1.40",
     "typer>=0.12",
@@ -56,7 +57,7 @@ mypy_path = "src"
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["telethon", "telethon.*"]
+module = ["telethon", "telethon.*", "qrcode", "qrcode.*"]
 ignore_missing_imports = true
 
 [tool.pydantic-mypy]

@@ -25,13 +25,18 @@ from newsdigest.telegram.types import (
 )
 
 
-def build_client(paths: Paths, settings: TelegramSettings) -> TelegramClient:
+def build_client(
+    paths: Paths, settings: TelegramSettings, *, receive_updates: bool = False
+) -> TelegramClient:
+    """Клієнт без фонових оновлень. `receive_updates=True` — лише для входу через QR:
+    Telegram повідомляє про скан оновленням UpdateLoginToken; новини при цьому не читаються.
+    """
     paths.session_dir.mkdir(parents=True, exist_ok=True)
     return TelegramClient(
         str(paths.session_file.with_suffix("")),
         settings.api_id,
         settings.api_hash,
-        receive_updates=False,
+        receive_updates=receive_updates,
         catch_up=False,
         flood_sleep_threshold=0,
         request_retries=2,
@@ -147,21 +152,145 @@ async def connected_gateway(
         await client.disconnect()
 
 
+_CODE_DELIVERY = {
+    "SentCodeTypeApp": "у застосунку Telegram: чат «Telegram» (офіційний, з галочкою) "
+    "на телефоні або в Desktop, де ви вже залогінені",
+    "SentCodeTypeSms": "SMS на номер",
+    "SentCodeTypeSmsWord": "SMS на номер (слово)",
+    "SentCodeTypeSmsPhrase": "SMS на номер (фраза)",
+    "SentCodeTypeFirebaseSms": "SMS на номер",
+    "SentCodeTypeFragmentSms": "через Fragment (анонімний номер)",
+    "SentCodeTypeCall": "голосовим дзвінком",
+    "SentCodeTypeFlashCall": "дзвінком (код — останні цифри номера, що дзвонить)",
+    "SentCodeTypeMissedCall": "пропущеним дзвінком (код — останні цифри номера)",
+    "SentCodeTypeEmailCode": "на пошту, прив'язану до Telegram для входу",
+    "SentCodeTypeSetUpEmailRequired": "Telegram вимагає спершу прив'язати пошту для входу "
+    "(Налаштування → Конфіденційність → Пошта для входу) в офіційному застосунку",
+}
+
+
+def describe_code_delivery(sent: Any) -> str:
+    """Людський опис, куди Telegram надіслав код входу (за типом SentCode)."""
+    kind = type(getattr(sent, "type", None)).__name__
+    where = _CODE_DELIVERY.get(kind, f"невідомий спосіб ({kind})")
+    parts = [f"Код надіслано {where}."]
+    next_type = getattr(sent, "next_type", None)
+    if next_type is not None:
+        next_kind = type(next_type).__name__.removeprefix("CodeType")
+        parts.append(f"Повторний запит (порожній Enter) надішле інакше: {next_kind}.")
+    timeout = getattr(sent, "timeout", None)
+    if timeout:
+        parts.append(f"Повторити можна через {timeout} с.")
+    return " ".join(parts)
+
+
 async def interactive_login(
     paths: Paths,
     settings: TelegramSettings,
     ask: Callable[[str], str] = input,
     ask_secret: Callable[[str], str] = getpass,
+    say: Callable[[str], None] = print,
 ) -> AccountInfo:
-    """Інтерактивний вхід: телефон, код Telegram і за потреби пароль 2FA (не зберігаються)."""
+    """Інтерактивний вхід: телефон, код Telegram і за потреби пароль 2FA (не зберігаються).
+
+    Показує, куди саме Telegram надіслав код, і дозволяє запросити його повторно
+    порожнім Enter (Telegram тоді зазвичай обирає інший спосіб доставки).
+    """
+    from telethon import errors
+
     client = build_client(paths, settings)
+    await client.connect()
     try:
-        await client.start(
-            phone=lambda: ask("Номер телефону (+380...): "),
-            code_callback=lambda: ask("Код із Telegram: "),
-            password=lambda: ask_secret("Пароль 2FA: "),
-            max_attempts=3,
-        )
-        return await TelethonGateway(client).account()
+        if await client.is_user_authorized():
+            say("Сесія вже авторизована.")
+            return await TelethonGateway(client).account()
+        phone = ask("Номер телефону (+380...): ").strip()
+        sent = await client.send_code_request(phone)
+        say(describe_code_delivery(sent))
+        for _ in range(5):
+            code = ask("Код (порожній Enter — надіслати повторно): ").strip().replace(" ", "")
+            if not code:
+                sent = await client.send_code_request(phone)
+                say(describe_code_delivery(sent))
+                continue
+            try:
+                await client.sign_in(phone=phone, code=code)
+            except errors.PhoneCodeInvalidError:
+                say("Невірний код, спробуйте ще раз.")
+                continue
+            except errors.PhoneCodeExpiredError:
+                say("Код прострочений, надсилаю новий.")
+                sent = await client.send_code_request(phone)
+                say(describe_code_delivery(sent))
+                continue
+            except errors.SessionPasswordNeededError:
+                for _ in range(3):
+                    try:
+                        await client.sign_in(password=ask_secret("Пароль 2FA: "))
+                        break
+                    except errors.PasswordHashInvalidError:
+                        say("Невірний пароль 2FA.")
+                else:
+                    raise TelegramError("auth_failed", "забагато спроб пароля 2FA") from None
+            return await TelethonGateway(client).account()
+        raise TelegramError("auth_failed", "вхід не завершено: забагато спроб")
+    finally:
+        await client.disconnect()
+
+
+def render_qr(url: str) -> str:
+    """QR-код посилання входу у вигляді тексту для термінала."""
+    import io
+
+    import qrcode
+
+    qr = qrcode.QRCode(border=2)
+    qr.add_data(url)
+    qr.make(fit=True)
+    buffer = io.StringIO()
+    qr.print_ascii(out=buffer, invert=True)
+    return buffer.getvalue()
+
+
+async def interactive_qr_login(
+    paths: Paths,
+    settings: TelegramSettings,
+    ask_secret: Callable[[str], str] = getpass,
+    say: Callable[[str], None] = print,
+    attempts: int = 5,
+) -> AccountInfo:
+    """Вхід через QR без коду: скан телефоном у Налаштування → Пристрої → Підключити пристрій."""
+    from telethon import errors
+
+    client = build_client(paths, settings, receive_updates=True)
+    await client.connect()
+    try:
+        if await client.is_user_authorized():
+            say("Сесія вже авторизована.")
+            return await TelethonGateway(client).account()
+        qr = await client.qr_login()
+        for _ in range(attempts):
+            say(render_qr(qr.url))
+            say(
+                "Відскануйте QR телефоном: Telegram → Налаштування → Пристрої → "
+                f"Підключити пристрій. Код діє до {qr.expires.astimezone():%H:%M:%S}."
+            )
+            try:
+                await qr.wait()
+            except TimeoutError:
+                say("Код прострочився, показую новий.")
+                await qr.recreate()
+                continue
+            except errors.SessionPasswordNeededError:
+                for _ in range(3):
+                    try:
+                        await client.sign_in(password=ask_secret("Пароль 2FA: "))
+                        break
+                    except errors.PasswordHashInvalidError:
+                        say("Невірний пароль 2FA.")
+                else:
+                    raise TelegramError("auth_failed", "забагато спроб пароля 2FA") from None
+            return await TelethonGateway(client).account()
+        raise TelegramError("auth_failed", "QR не відскановано вчасно")
     finally:
         await client.disconnect()

@@ -67,7 +67,7 @@ function Show-Help {
     Write-Host "  digest [args]    Run any digest CLI command"
     Write-Host ""
     Write-Host "Telegram (needs TELEGRAM_API_ID/HASH in .env):"
-    Write-Host "  login            Interactive Telegram login (session in ./session)"
+    Write-Host "  login [--qr]     Interactive Telegram login (session in ./session)"
     Write-Host "  dialogs          List channels with IDs for the config"
     Write-Host "  doctor           Check session, sources and posting rights"
     Write-Host "  scan [args]      Manual scan of one window, e.g. scan --channel dnipro_news"
@@ -157,7 +157,7 @@ switch ($Command) {
         Invoke-App digest @Rest
     }
     "login" {
-        Invoke-AppNoDb digest login
+        Invoke-AppNoDb digest login @Rest
     }
     "dialogs" {
         Invoke-AppNoDb digest dialogs

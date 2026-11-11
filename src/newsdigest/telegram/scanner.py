@@ -45,10 +45,13 @@ def classify(message: RawMessage, window: Window) -> str | None:
         return "service"
     if not message.text.strip():
         return "unsupported_media" if message.has_media else "invalid_content"
-    if message.edit_date_utc is not None and message.edit_date_utc >= window.end_utc:
-        # Редакцію після cutoff не видаємо за відому до cutoff, а старої версії немає (v4 §9).
-        return "post_cutoff_edit"
+    # D-024: допис, відредагований після межі, береться в поточній версії (не відкидається);
+    # `edit_date_utc` лишається в кеші, кількість таких дописів рахується окремо.
     return None
+
+
+def edited_after_cutoff(message: RawMessage, window: Window) -> bool:
+    return message.edit_date_utc is not None and message.edit_date_utc >= window.end_utc
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +61,7 @@ class ScanSummary:
     statuses: dict[str, str]
     in_window: int
     excluded: dict[str, int]
+    edited_after_cutoff: int = 0
 
     @property
     def complete(self) -> bool:
@@ -180,6 +184,8 @@ class HistoryScanner:
                 if reason is not None:
                     progress.excluded[reason] = progress.excluded.get(reason, 0) + 1
                     continue
+                if edited_after_cutoff(message, window):
+                    progress.edited_after_cutoff += 1
                 records.append(
                     CachedMessage(
                         source_id=source.id,
@@ -220,4 +226,5 @@ def summarize(manifest: RunManifest) -> ScanSummary:
         statuses={sid: p.status for sid, p in manifest.sources.items()},
         in_window=sum(p.in_window for p in manifest.sources.values()),
         excluded=dict(sorted(excluded.items())),
+        edited_after_cutoff=sum(p.edited_after_cutoff for p in manifest.sources.values()),
     )

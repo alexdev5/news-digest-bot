@@ -69,7 +69,8 @@ schema, `all_unique` та per-part uniqueness проходять на синте
   пишеться до cursor (T16); TTL від створення (T28), ліміт розміру, cleanup без
   активних runs; прострочені runs → `cache_expired`.
 - `telegram/scanner.py`: пагінація від end до start (T15), фільтр `[start,end)` (T13),
-  виключення service/media_only/post_cutoff_edit (T20, T21), coverage
+  виключення service/media_only (T21), поточна версія відредагованих після межі
+  (D-024, замість T20), coverage
   complete/partial/unavailable/excluded (T22), продовження partial з cursor,
   закріплення peer і блок при зміні username (v4 §6).
 - `telegram/rate_limit.py`: один запит одночасно, пауза ≥1 с, FloodWait ≤60 с —

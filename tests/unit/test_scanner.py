@@ -99,7 +99,8 @@ async def test_window_bounds_t13(tmp_path: Path) -> None:
     assert [m.message_id for m in cache.read_messages()] == [2, 3]
 
 
-async def test_exclusions_t20_t21(tmp_path: Path) -> None:
+async def test_exclusions_t21_and_late_edits_d024(tmp_path: Path) -> None:
+    """D-024 (замінює T20): редагування після межі не відкидає допис, береться поточна версія."""
     mid = START + timedelta(hours=1)
     items = [
         RawMessage(1, mid, None, "", is_service=True),
@@ -110,13 +111,12 @@ async def test_exclusions_t20_t21(tmp_path: Path) -> None:
     ]
     env = Env(tmp_path, gateway(items))
     summary, cache = await env.scan(target())
-    assert [m.message_id for m in cache.read_messages()] == [4]
-    assert summary.excluded == {
-        "invalid_content": 1,
-        "post_cutoff_edit": 1,
-        "service": 1,
-        "unsupported_media": 1,
-    }
+    cached = {m.message_id: m for m in cache.read_messages()}
+    assert sorted(cached) == [3, 4]
+    assert cached[3].text == "редаговано після cutoff"
+    assert cached[3].edit_date_utc == END + timedelta(minutes=1)
+    assert summary.edited_after_cutoff == 1
+    assert summary.excluded == {"invalid_content": 1, "service": 1, "unsupported_media": 1}
 
 
 async def test_resume_after_failure_without_duplicates_t16(tmp_path: Path) -> None:
@@ -224,3 +224,29 @@ async def test_private_channel_url(tmp_path: Path) -> None:
     env = Env(tmp_path, gw)
     _, cache = await env.scan(target())
     assert cache.read_messages()[0].url == "https://t.me/c/1000000001/1"
+
+
+def test_describe_code_delivery() -> None:
+    from types import SimpleNamespace
+
+    from telethon.tl.types import auth
+
+    from newsdigest.telegram.telethon_gateway import describe_code_delivery
+
+    sent = SimpleNamespace(
+        type=auth.SentCodeTypeApp(length=5), next_type=auth.CodeTypeSms(), timeout=60
+    )
+    text = describe_code_delivery(sent)
+    assert "чат «Telegram»" in text and "Sms" in text and "60 с" in text
+    email = SimpleNamespace(
+        type=auth.SentCodeTypeSetUpEmailRequired(), next_type=None, timeout=None
+    )
+    assert "Пошта для входу" in describe_code_delivery(email)
+
+
+def test_render_qr_contains_blocks() -> None:
+    from newsdigest.telegram.telethon_gateway import render_qr
+
+    text = render_qr("tg://login?token=abc")
+    assert len(text.splitlines()) > 10
+    assert "█" in text or "▀" in text

@@ -56,7 +56,7 @@ App:
   digest [args]    Run any digest CLI command
 
 Telegram (needs TELEGRAM_API_ID/HASH in .env):
-  login            Interactive Telegram login (session in ./session)
+  login [--qr]     Interactive Telegram login (session in ./session)
   dialogs          List channels with IDs for the config
   doctor           Check session, sources and posting rights
   scan [args]      Manual scan of one window, e.g. scan --channel dnipro_news
@@ -104,7 +104,7 @@ case "$command" in
     fi
     ;;
   digest) app digest "$@" ;;
-  login) app_no_db digest login ;;
+  login) app_no_db digest login "$@" ;;
   dialogs) app_no_db digest dialogs ;;
   doctor) app_no_db digest doctor --config "$(config_path)" ;;
   scan) app_no_db digest scan --config "$(config_path)" "$@" ;;

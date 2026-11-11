@@ -21,7 +21,7 @@ rem   check      - lint + typecheck + test
 rem   validate   - validate config (default config/config.json or the example)
 rem   schedule   - show next windows (default: --all)
 rem   digest     - run any digest CLI command
-rem   login      - interactive Telegram login (session in ./session)
+rem   login      - interactive Telegram login; login --qr to scan a QR code
 rem   dialogs    - list channels with IDs for the config
 rem   doctor     - check session, sources and posting rights
 rem   scan       - manual scan of one window: scan --channel <id>

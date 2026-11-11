@@ -29,7 +29,7 @@
           "selectors": null
         }
       ],
-      "ai": { "prompt_file": "prompts/dnipro_news.md" },
+      "ai": { "prompt_file": "prompts/news-ua.md" },
       "filters": { "exclude_patterns": ["реклама", "розіграш"] },
       "format": { "header": "{name} · {date} {time}" },
       "daily_budget_usd": 1.0

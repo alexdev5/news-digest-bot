@@ -226,7 +226,7 @@ OpenAI Responses API, за замовчуванням `model=gpt-5.6-sol`,
         { "id": "example_ua", "enabled": true, "name": "Example.ua",
           "url": "https://example.ua/news", "rss": null, "selectors": null }
       ],
-      "ai": { "prompt_file": "prompts/dnipro_news.md" },
+      "ai": { "prompt_file": "prompts/news-ua.md" },
       "filters": { "exclude_patterns": ["реклама", "розіграш"] },
       "format": { "header": "{name} · {date} {time}" },
       "daily_budget_usd": 1.0

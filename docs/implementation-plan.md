@@ -25,7 +25,7 @@
 - `storage/models.py` + Alembic-міграція `0001`: confirmed-only PostgreSQL (D-022),
   рядок на частину, `source_message_ids` JSONB з GIN-індексом (D-012), UNIQUE/CHECK
   для частин і JSON-полів. `settings.py` — підключення зі змінних `POSTGRES_*`.
-- `config/config.example.json`, `config/prompts/dnipro_news.md`.
+- `config/config.example.json`, `config/prompts/news-ua.md`.
 - Команди: `digest validate-config`, `digest schedule --channel <id> | --all`, `digest migrate`.
 - Docker: `Dockerfile`, `docker-compose.yml` (db + app), обгортки `run.cmd`/`run.ps1`/`run.sh`.
 - 108 тестів (87 без БД + 21 PostgreSQL) проходять у Docker (`.\run.cmd check`);

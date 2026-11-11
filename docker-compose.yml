@@ -1,5 +1,6 @@
-# Локальна розробка. Довгоживучого worker поки немає (з'явиться на етапі 2),
-# тому команди виконуються одноразовими контейнерами: `docker compose run --rm app …`.
+# Локальна розробка. Команди виконуються одноразовими контейнерами
+# (`docker compose run --rm app …`); worker — `run.cmd worker` / `./run.sh worker`.
+# Telegram API: TELEGRAM_API_ID / TELEGRAM_API_HASH у .env (не комітиться).
 # PostgreSQL — як у crypto-bot (postgres:16-alpine); порт на хості за замовчуванням 5433,
 # щоб не конфліктувати з базою crypto-bot на 5432.
 services:
@@ -34,6 +35,11 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-news_digest}
       # У контейнері тести БД мають падати, а не пропускатися, якщо база недоступна.
       NEWSDIGEST_REQUIRE_DB: "1"
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:-}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-}
+      NEWSDIGEST_STATE_DIR: /state
+      NEWSDIGEST_CACHE_DIR: /cache
+      NEWSDIGEST_SESSION_DIR: /session
     volumes:
       # Код монтується поверх образу: зміни видно без перезбірки.
       # Віртуальне оточення лежить у /opt/venv і монтуванням не перекривається.
@@ -41,6 +47,9 @@ services:
       - ./tests:/app/tests
       - ./config:/app/config
       - ./pyproject.toml:/app/pyproject.toml:ro
+      - ./state:/state
+      - ./cache:/cache
+      - ./session:/session
     depends_on:
       db:
         condition: service_healthy

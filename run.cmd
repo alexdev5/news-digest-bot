@@ -21,6 +21,12 @@ rem   check      - lint + typecheck + test
 rem   validate   - validate config (default config/config.json or the example)
 rem   schedule   - show next windows (default: --all)
 rem   digest     - run any digest CLI command
+rem   login      - interactive Telegram login (session in ./session)
+rem   dialogs    - list channels with IDs for the config
+rem   doctor     - check session, sources and posting rights
+rem   scan       - manual scan of one window: scan --channel <id>
+rem   worker     - run the scheduler worker in the foreground
+rem   status     - channel state, recent runs, heartbeat
 rem
 rem This .cmd file keeps Windows usage short and delegates real logic to
 rem run.ps1, where Docker legacy builder env vars are set automatically.

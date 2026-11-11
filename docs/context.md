@@ -27,10 +27,11 @@ JSON-конфігу зі своїми джерелами, промптом і р
 ## Поточний стан
 
 - Git: `main`, remote `origin` (GitHub). Push робить лише власник.
-- Етап 1 частково готовий: `src/newsdigest` — JSON-конфіг (Pydantic), розклади й
-  вікна, `digest_key`/`part_key`, PostgreSQL-схема частин (Alembic); CLI `validate-config`,
-  `schedule`, `migrate`; 87 тестів без БД проходять, 21 тест PostgreSQL ще не запускався. Деталі — [implementation-plan.md](implementation-plan.md).
-- Немає: Telegram, OpenAI, сайтів, `/state`/кешу, доставки, Docker.
+- Етапи 1–2 (основне) готові: конфіг, розклади й ревізії, PostgreSQL, `/state`, кеш,
+  сканер Telegram (Telethon), worker `digest run`, CLI login/dialogs/doctor/scan/status.
+  157 тестів у Docker. Деталі — [implementation-plan.md](implementation-plan.md).
+- Немає: AI-обробки, рендеру, публікації, сайтів. Worker лише сканує в кеш.
+- Живої перевірки з Telegram ще не було: потрібні `api_id`/`api_hash` і `digest login`.
 - Кореневий `main.py` — шаблон PyCharm, не точка входу (не видаляли — файл власника).
 - Python 3.13 встановлено через uv (системний Python — 3.14). Команди — `uv run …`;
   якщо `uv` нема в PATH, `python -m uv run …`.
@@ -83,11 +84,29 @@ JSON-конфігу зі своїми джерелами, промптом і р
 
 ## Наступні кроки
 
-1. Закрити хвости етапу 1 разом з етапом 2: atomic state storage, schemas `/state`
-   і part manifest, schedule revisions, process/per-channel locks, кеш із TTL.
-2. Далі — Telegram-адаптер (етап 2), сайти (2a), pipeline/attribution/renderer (3).
+1. Жива перевірка етапу 2: власник отримує `api_id`/`api_hash`, `.\run.cmd login`,
+   `dialogs`, реальні канали в `config/config.json`, `.\run.cmd scan --channel …`.
+2. Далі — сайти (2a), pipeline/attribution/renderer (3), OpenAI (4), доставка (5).
 
 ## Журнал
+
+### 2026-11-11 — етап 2: стан, кеш, сканер Telegram, worker
+
+- Telethon 1.45 (`receive_updates=False`, `catch_up=False`, `flood_sleep_threshold=0`).
+- Нові модулі: `state/` (atomic JSON + checksum, ProcessLock, моделі стану),
+  `cache/run_cache.py`, `telegram/` (types, rate_limit, scanner, telethon_gateway),
+  `worker.py`, `cli_telegram.py`, `cli_common.py`, `logging_setup.py`.
+- Вибір асистента: run етапу 2 закінчується статусом `scanned`; partial-джерело
+  продовжується з cursor при повторі; непередбачена помилка run → `failed`
+  (`internal_error`), worker працює далі; shared scan batch і control socket відкладені.
+- Prod: worker стартує з `deploy.sh` лише після `digest login` і Telegram-секретів.
+- Виправлено у двох docs зіпсований символ (CR замість `\r` у `.\run.cmd`) і
+  нормалізовано їхні закінчення рядків до LF.
+
+### 2026-11-11 — перший успішний автодеплой
+
+- Run #2 (коміт fae09bd): `check` і `deploy` — success (перевірено через GitHub API).
+  Сервер підготовлено (`init-server.sh`, config), на VPS працює проєкт `news-digest` із `db`.
 
 ### 2026-11-11 — перший CI і виправлення JSONB
 
@@ -95,7 +114,7 @@ JSON-конфігу зі своїми джерелами, промптом і р
 - Причина (відтворено локально в Docker): SQLAlchemy писав Python `None` у JSONB як
   JSON `null`, а не SQL NULL → CHECK `items_is_array` ламав запис часткового відновлення.
   Виправлено: `JSONB(none_as_null=True)` у `storage/models.py` (DDL міграції не змінився).
-- Перевірено локально: `.un.cmd check` — 108 passed, ruff/mypy чисті; `.un.cmd migrate`;
+- Перевірено локально: `.\run.cmd check` — 108 passed, ruff/mypy чисті; `.\run.cmd migrate`;
   збірка runtime-образу й `digest --help` під UID 10001 з read-only FS.
 - Сервер: репозиторій у `/srv/news-digest`, ключ CI встановлено (forced command).
 

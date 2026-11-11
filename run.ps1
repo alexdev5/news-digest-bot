@@ -65,6 +65,14 @@ function Show-Help {
     Write-Host "  validate [path]  Validate config (default config/config.json or the example)"
     Write-Host "  schedule [args]  Show next windows (default: --all)"
     Write-Host "  digest [args]    Run any digest CLI command"
+    Write-Host ""
+    Write-Host "Telegram (needs TELEGRAM_API_ID/HASH in .env):"
+    Write-Host "  login            Interactive Telegram login (session in ./session)"
+    Write-Host "  dialogs          List channels with IDs for the config"
+    Write-Host "  doctor           Check session, sources and posting rights"
+    Write-Host "  scan [args]      Manual scan of one window, e.g. scan --channel dnipro_news"
+    Write-Host "  worker           Run the scheduler worker in the foreground"
+    Write-Host "  status           Channel state, recent runs, heartbeat"
 }
 
 $Command = $Command.ToLowerInvariant()
@@ -147,6 +155,28 @@ switch ($Command) {
     }
     "digest" {
         Invoke-App digest @Rest
+    }
+    "login" {
+        Invoke-AppNoDb digest login
+    }
+    "dialogs" {
+        Invoke-AppNoDb digest dialogs
+    }
+    "doctor" {
+        $ConfigPath = Get-ConfigPath
+        Invoke-AppNoDb digest doctor --config $ConfigPath
+    }
+    "scan" {
+        $ConfigPath = Get-ConfigPath
+        Invoke-AppNoDb digest scan --config $ConfigPath @Rest
+    }
+    "worker" {
+        $ConfigPath = Get-ConfigPath
+        Invoke-App digest run --config $ConfigPath
+    }
+    "status" {
+        $ConfigPath = Get-ConfigPath
+        Invoke-AppNoDb digest status --config $ConfigPath
     }
     default {
         Write-Host "Unknown command: $Command"

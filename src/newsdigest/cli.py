@@ -1,26 +1,25 @@
-"""CLI `digest`. На етапі 1 — команди без Telegram/OpenAI: конфіг, розклад, міграції БД."""
+"""CLI `digest`: конфіг, розклад, міграції БД і команди Telegram/worker (cli_telegram)."""
 
 from __future__ import annotations
 
 import io
 import sys
 from datetime import UTC, datetime
-from enum import IntEnum
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
-from newsdigest.config import ConfigError, LoadedConfig, effective_channel, load_config
+from newsdigest.cli_common import DEFAULT_CONFIG, ConfigOption, ExitCode
+from newsdigest.cli_telegram import register as register_telegram_commands
+from newsdigest.config import (
+    AppConfig,
+    ConfigError,
+    LoadedConfig,
+    effective_channel,
+    load_config,
+)
 from newsdigest.scheduling import upcoming_boundaries, window_for_boundary
-
-
-class ExitCode(IntEnum):
-    OK = 0
-    CONFIG_ERROR = 2
-    USAGE_ERROR = 3
-    DATABASE_ERROR = 4
-
 
 app = typer.Typer(
     name="digest",
@@ -39,12 +38,6 @@ def _setup() -> None:
             stream.reconfigure(encoding="utf-8", errors="replace")
 
 
-ConfigOption = Annotated[
-    Path,
-    typer.Option("--config", "-c", help="Шлях до JSON-конфігу.", dir_okay=False),
-]
-
-
 def _load_or_exit(path: Path) -> LoadedConfig:
     try:
         return load_config(path)
@@ -56,7 +49,7 @@ def _load_or_exit(path: Path) -> LoadedConfig:
 
 
 @app.command("validate-config")
-def validate_config(config: ConfigOption = Path("config/config.json")) -> None:
+def validate_config(config: ConfigOption = DEFAULT_CONFIG) -> None:
     """Локальна перевірка конфігу без мережі, платних викликів і публікацій."""
     loaded = _load_or_exit(config)
     channels = loaded.config.target_channels
@@ -73,7 +66,7 @@ def validate_config(config: ConfigOption = Path("config/config.json")) -> None:
 
 @app.command("schedule")
 def schedule(
-    config: ConfigOption = Path("config/config.json"),
+    config: ConfigOption = DEFAULT_CONFIG,
     channel: Annotated[str | None, typer.Option(help="id цільового каналу.")] = None,
     all_channels: Annotated[bool, typer.Option("--all", help="Усі цільові канали.")] = False,
     next_count: Annotated[int, typer.Option("--next", min=1, max=100)] = 5,
@@ -126,6 +119,13 @@ def migrate(
         typer.echo(f"Помилка БД: {exc.__class__.__name__}: {exc}", err=True)
         raise typer.Exit(ExitCode.DATABASE_ERROR) from exc
     typer.echo(f"OK: схема БД оновлена до {revision}")
+
+
+def _load_config(path: Path) -> AppConfig:
+    return _load_or_exit(path).config
+
+
+register_telegram_commands(app, _load_config)
 
 
 def main() -> None:  # pragma: no cover

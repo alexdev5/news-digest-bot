@@ -2,10 +2,9 @@
 # `news-digest` із двома контейнерами — власний PostgreSQL (`db`) і бот (`app`).
 # Від crypto-bot не залежить: своя мережа, свій том, свій пароль (D-023).
 #
-# Сервіс `app` має profile `worker`: довгоживучого worker (`digest run`) ще немає
-# (етап 2), тому `docker compose up -d` поки запускає лише `db`, а бот не крутиться
-# в restart-циклі. Міграції й офлайн-команди — через `run --rm app …`.
-# Коли worker з'явиться, profile прибрати.
+# Сервіс `app` (worker `digest run`) має profile `worker`: його запускає
+# deploy/deploy.sh лише після `digest login` і заповнених Telegram-секретів, щоб
+# контейнер не крутився в restart-циклі без сесії. `up -d` без profile — лише `db`.
 name: news-digest
 
 services:
@@ -48,6 +47,11 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-news_digest}
       POSTGRES_USER: ${POSTGRES_USER:-news_digest}
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      TELEGRAM_API_ID_FILE: /run/secrets/telegram_api_id
+      TELEGRAM_API_HASH_FILE: /run/secrets/telegram_api_hash
+      NEWSDIGEST_STATE_DIR: /state
+      NEWSDIGEST_CACHE_DIR: /cache
+      NEWSDIGEST_SESSION_DIR: /session
     depends_on:
       db:
         condition: service_healthy
@@ -65,11 +69,24 @@ services:
       - /tmp:size=64m,mode=1777
     secrets:
       - postgres_password
+      - telegram_api_id
+      - telegram_api_hash
+    healthcheck:
+      test: ["CMD", "digest", "healthcheck"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    stop_grace_period: 60s
     logging: *default-logging
 
 secrets:
   postgres_password:
     file: ./secrets/postgres_password
+  telegram_api_id:
+    file: ./secrets/telegram_api_id
+  telegram_api_hash:
+    file: ./secrets/telegram_api_hash
 
 volumes:
   pgdata:

@@ -58,7 +58,36 @@ Crypto-bot і його стек `postgres` не використовуються
 4. **Конфіг:** покласти робочий `config/config.json` і промпти в `config/prompts/`.
 5. **Деплой:** `bash deploy/deploy.sh` — підніме `db`, створить схему й перевірить конфіг.
 
-Секрети Telegram і OpenAI додаються в `secrets/` на етапах 2 і 4.
+## Telegram (етап 2)
+
+1. На https://my.telegram.org → API development tools отримати `api_id` і `api_hash`.
+2. На сервері записати їх у файли (по одному значенню, без лапок):
+   ```bash
+   cd /srv/news-digest
+   sudo sh -c 'printf %s 1234567 > secrets/telegram_api_id'
+   sudo sh -c 'printf %s abcdef0123456789 > secrets/telegram_api_hash'
+   ```
+   (`init-server.sh` створює порожні заготовки з правами 0444.)
+3. Вхід в акаунт — інтерактивно, worker має бути зупинений:
+   ```bash
+   docker compose -f docker-compose.prod.yml --profile worker stop app
+   docker compose -f docker-compose.prod.yml --profile worker run --rm app digest login
+   ```
+   Номер телефону, код із Telegram і пароль 2FA вводяться лише в терміналі й
+   ніде не зберігаються; сесія — у `session/`.
+4. Перевірка без читання історії джерел:
+   ```bash
+   docker compose -f docker-compose.prod.yml --profile worker run --rm app digest dialogs
+   docker compose -f docker-compose.prod.yml --profile worker run --rm app digest doctor --config /config/config.json
+   ```
+5. `bash deploy/deploy.sh` (або наступний push) запустить worker. Стан:
+   `… run --rm app digest status --config /config/config.json`.
+
+Ручне сканування одного вікна (без публікації, друкує лише лічильники):
+`… run --rm app digest scan --config /config/config.json --channel <id>` — теж
+лише при зупиненому worker.
+
+Секрет OpenAI додається в `secrets/` на етапі 4.
 
 ## Автодеплой (GitHub Actions, як у crypto-bot)
 
@@ -145,6 +174,6 @@ docker compose -f docker-compose.prod.yml exec -T db \
 
 ## Що ще не зроблено
 
-- Worker і запуск бота: етап 2 (тоді прибрати `profiles` у prod compose).
+- Worker сканує, але ще не публікує: обробка AI й доставка — етапи 3–5.
 - Щоденний backup за таймером (зараз — перед кожним деплоєм або вручну).
 - Копія бекапів поза сервером.

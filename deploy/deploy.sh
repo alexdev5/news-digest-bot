@@ -4,8 +4,8 @@
 #   Вручну:      cd /srv/news-digest && bash deploy/deploy.sh   (бере поточний origin/main)
 #
 # Порядок: перевірка файлів → оновлення коду до точного коміту → build → db →
-# backup → міграції → перевірка конфігу. Worker (`digest run`) ще не реалізований
-# (етап 2), тому бот не запускається; контейнер db працює постійно.
+# backup → міграції → перевірка конфігу → (пере)запуск worker, якщо вже виконано
+# `digest login` і заповнені Telegram-секрети. Інакше працює лише db.
 set -euo pipefail
 
 APP_DIR="${NEWS_DIGEST_APP_DIR:-/srv/news-digest}"
@@ -16,6 +16,16 @@ for path in .env config/config.json secrets/postgres_password; do
   if [ ! -e "$path" ]; then
     echo "Немає $path — див. docs/deployment.md (первинне налаштування)" >&2
     exit 1
+  fi
+done
+
+# Compose вимагає наявності всіх файлів секретів сервісу app. Порожні заготовки
+# Telegram-секретів не дають деплою впасти; worker без значень не запускається.
+for name in telegram_api_id telegram_api_hash; do
+  if [ ! -e "secrets/$name" ]; then
+    : > "secrets/$name"
+    chmod 0444 "secrets/$name"
+    echo ">> Створено порожній secrets/$name (заповніть значенням із my.telegram.org)"
   fi
 done
 
@@ -49,4 +59,11 @@ echo ">> Migrations"
 echo ">> Config check"
 "${COMPOSE[@]}" run --rm app digest validate-config --config /config/config.json
 
-echo ">> Done. Worker ще не реалізований (етап 2) — бот не запускається, db працює."
+if [ -s secrets/telegram_api_id ] && [ -s secrets/telegram_api_hash ]   && [ -s session/newsdigest.session ]; then
+  echo ">> Starting worker"
+  "${COMPOSE[@]}" up -d --no-deps app
+  echo ">> Done. Worker запущено."
+else
+  echo ">> Done. Worker НЕ запущено: потрібні secrets/telegram_api_* і digest login"
+  echo "   (див. docs/deployment.md, «Telegram»)."
+fi

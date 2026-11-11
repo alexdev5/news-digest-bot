@@ -45,6 +45,15 @@ else
 fi
 chmod 0444 "$SECRET"
 
+# Telegram API (my.telegram.org): порожні заготовки, які треба заповнити вручну.
+for name in telegram_api_id telegram_api_hash; do
+  if [ ! -e "secrets/$name" ]; then
+    : > "secrets/$name"
+    echo "   Створено порожній secrets/$name — впишіть значення з my.telegram.org"
+  fi
+  chmod 0444 "secrets/$name"
+done
+
 if [ ! -f .env ]; then
   cp .env.prod.example .env
   echo ">> Створено .env із .env.prod.example"

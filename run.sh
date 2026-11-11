@@ -54,6 +54,14 @@ App:
   validate [path]  Validate config (default config/config.json or the example)
   schedule [args]  Show next windows (default: --all)
   digest [args]    Run any digest CLI command
+
+Telegram (needs TELEGRAM_API_ID/HASH in .env):
+  login            Interactive Telegram login (session in ./session)
+  dialogs          List channels with IDs for the config
+  doctor           Check session, sources and posting rights
+  scan [args]      Manual scan of one window, e.g. scan --channel dnipro_news
+  worker           Run the scheduler worker in the foreground
+  status           Channel state, recent runs, heartbeat
 EOF
 }
 
@@ -96,6 +104,12 @@ case "$command" in
     fi
     ;;
   digest) app digest "$@" ;;
+  login) app_no_db digest login ;;
+  dialogs) app_no_db digest dialogs ;;
+  doctor) app_no_db digest doctor --config "$(config_path)" ;;
+  scan) app_no_db digest scan --config "$(config_path)" "$@" ;;
+  worker) app digest run --config "$(config_path)" ;;
+  status) app_no_db digest status --config "$(config_path)" ;;
   *)
     echo "Unknown command: $command" >&2
     show_help

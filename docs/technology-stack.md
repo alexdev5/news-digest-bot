@@ -5,8 +5,8 @@
 
 Зафіксовано в `uv.lock` (2026-11-11, Python 3.13.18, uv 0.13.7): pydantic 2.14.3,
 typer 0.29.1, tzdata 2026.6, sqlalchemy 2.1.8, psycopg 3.3.8, alembic; dev — pytest 9.2.0, pytest-asyncio 1.4.1.post1,
-ruff 0.17.4, mypy 2.4.1. Telethon, openai та бібліотеки для сайтів ще не додані —
-вони з'являться на відповідних етапах. На Windows `tzdata` обов'язковий для `zoneinfo`.
+ruff 0.17.4, mypy 2.4.1; telethon 1.45.0 (етап 2). openai та бібліотеки для сайтів
+ще не додані — вони з'являться на відповідних етапах. На Windows `tzdata` обов'язковий для `zoneinfo`.
 
 ## Повний вибір для MVP
 

@@ -1,7 +1,7 @@
 # План реалізації
 
-Стан на 2026-11-11: документація підготовлена; **етап 1 частково виконаний**
-(див. «Результат етапу 1»). Решта етапів не розпочата. Базові вимоги — у
+Стан на 2026-11-11: етап 1 виконаний, **етап 2 виконаний частково** (див.
+«Результат етапу 2»). Етапи 2a–6 не розпочаті. Базові вимоги — у
 [specification.md](specification.md), прогалини — у [review.md](review.md).
 
 ## 1. Каркас, схеми та офлайн-правила
@@ -28,7 +28,7 @@
 - `config/config.example.json`, `config/prompts/dnipro_news.md`.
 - Команди: `digest validate-config`, `digest schedule --channel <id> | --all`, `digest migrate`.
 - Docker: `Dockerfile`, `docker-compose.yml` (db + app), обгортки `run.cmd`/`run.ps1`/`run.sh`.
-- 108 тестів (87 без БД + 21 PostgreSQL) проходять у Docker (`.un.cmd check`);
+- 108 тестів (87 без БД + 21 PostgreSQL) проходять у Docker (`.\run.cmd check`);
   ruff і mypy без зауважень. `digest migrate` і production-образ перевірені локально.
 
 Ще не зроблено в межах етапу 1: versioned schemas `/state` і part manifest,
@@ -55,6 +55,46 @@
 schema, `all_unique` та per-part uniqueness проходять на синтетичних даних.
 
 ## 2. Cache/state і Telegram-адаптер
+
+### Результат етапу 2 (2026-11-11)
+
+Зроблено:
+
+- `state/`: атомарні JSON-файли з версією й checksum (`runtime.json`,
+  `rate_limits.json`, `heartbeat.json`), пошкодження → `StateCorruptError`, не reset;
+  Pydantic `extra=forbid` як whitelist (без новинних текстів); `ProcessLock`.
+- Ревізії розкладу в стані: зміна конфігу → перехідне вікно `[C,N)`, повторна зміна
+  до C замінює pending (T06, T09); вимкнення/увімкнення без лавини (T10).
+- `cache/`: `/cache/runs/<digest_key>/manifest.json` + `messages.jsonl`; сторінка
+  пишеться до cursor (T16); TTL від створення (T28), ліміт розміру, cleanup без
+  активних runs; прострочені runs → `cache_expired`.
+- `telegram/scanner.py`: пагінація від end до start (T15), фільтр `[start,end)` (T13),
+  виключення service/media_only/post_cutoff_edit (T20, T21), coverage
+  complete/partial/unavailable/excluded (T22), продовження partial з cursor,
+  закріплення peer і блок при зміні username (v4 §6).
+- `telegram/rate_limit.py`: один запит одночасно, пауза ≥1 с, FloodWait ≤60 с —
+  очікування, довший — `pause_until` у `/state` (T75).
+- `telegram/telethon_gateway.py`: Telethon 1.45, `receive_updates=False`,
+  `catch_up=False`, `flood_sleep_threshold=0`, підключення лише на час операції.
+- `worker.py`: межі каналів, misfires із grace (T08, T14), відновлення перерваного
+  run у grace, heartbeat, без читання джерел між межами (T11, T12). Run закінчується
+  статусом `scanned`: обробка/публікація — етапи 3–5.
+- CLI: `login`, `dialogs`, `doctor`, `scan`, `run`, `status`, `cache-status`,
+  `cache-clean`, `healthcheck`; обгортки `.\run.cmd login|dialogs|doctor|scan|worker|status`.
+- Docker: Telegram-секрети як compose secrets, healthcheck; `deploy.sh` запускає
+  worker лише після login і заповнених секретів.
+- 157 тестів проходять у Docker (`.\run.cmd check`), ruff і mypy без зауважень.
+
+Не зроблено в етапі 2 (свідомо відкладено):
+
+- Спільний scan batch для одного джерела в кількох каналах (оптимізація; при
+  ~50 дописах на добу джерело читається окремо для кожного каналу).
+- Локальний control socket: online-команди (dialogs/doctor/scan) потребують
+  зупиненого worker (process lock), а `status` читає файли стану напряму.
+- Delivery guards і part manifest — разом із доставкою (етап 5).
+- Живу перевірку з реальним Telegram-акаунтом ще не виконано.
+
+Початковий план етапу:
 
 Результат:
 

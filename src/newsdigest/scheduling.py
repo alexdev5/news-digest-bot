@@ -217,3 +217,115 @@ def plan_transition(old: Trigger, new: Trigger, now: datetime) -> Transition:
     N — перша межа нового розкладу строго після C."""
     cutover = next_boundary(old, now)
     return Transition(cutover, Window(cutover, next_boundary(new, cutover)))
+
+
+@dataclass(frozen=True, slots=True)
+class Revision:
+    """Ревізія розкладу: діє для меж строго після `effective_from` (None — без обмеження).
+
+    Межа, що дорівнює `effective_from` наступної ревізії, ще належить попередній:
+    так старе відкрите вікно закінчується на C, а нова ревізія починає з `[C, N)` (v4 §7.6).
+    """
+
+    trigger: Trigger
+    effective_from: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if self.effective_from is not None:
+            object.__setattr__(self, "effective_from", to_utc(self.effective_from))
+
+
+def _check_revisions(revisions: tuple[Revision, ...]) -> None:
+    if not revisions:
+        raise ScheduleError("потрібна хоча б одна ревізія розкладу")
+    if revisions[0].effective_from is not None:
+        raise ScheduleError("перша ревізія не має межі початку")
+    starts = [r.effective_from for r in revisions[1:]]
+    if any(s is None for s in starts):
+        raise ScheduleError("лише перша ревізія може бути без effective_from")
+    known = [s for s in starts if s is not None]
+    if known != sorted(known) or len(set(known)) != len(known):
+        raise ScheduleError("ревізії мають іти за зростанням effective_from")
+
+
+def _owner_index(revisions: tuple[Revision, ...], boundary: datetime) -> int:
+    owner = 0
+    for index, revision in enumerate(revisions):
+        if revision.effective_from is None or boundary > revision.effective_from:
+            owner = index
+    return owner
+
+
+def next_boundary_rev(revisions: tuple[Revision, ...], after: datetime) -> datetime:
+    """Перша межа строго після `after` з урахуванням ревізій розкладу."""
+    _check_revisions(revisions)
+    cursor = to_utc(after)
+    for index, revision in enumerate(revisions):
+        start = revision.effective_from
+        probe = cursor if start is None or cursor >= start else start
+        candidate = next_boundary(revision.trigger, probe)
+        limit = revisions[index + 1].effective_from if index + 1 < len(revisions) else None
+        if limit is None or candidate <= limit:
+            return candidate
+        if limit is not None and cursor < limit:
+            # Межа C (кінець старої ревізії) — завжди межа старого розкладу.
+            return limit
+    raise ScheduleError("не знайдено наступної межі")  # pragma: no cover
+
+
+def window_for_boundary_rev(
+    revisions: tuple[Revision, ...], boundary: datetime, scan_start_at: datetime
+) -> Window | None:
+    """Вікно межі з урахуванням ревізій і `scan_start_at`; None — випуск не створюється."""
+    _check_revisions(revisions)
+    boundary_utc = to_utc(boundary)
+    revision = revisions[_owner_index(revisions, boundary_utc)]
+    if not is_boundary(revision.trigger, boundary_utc):
+        raise ScheduleError(f"{boundary_utc.isoformat()} не є плановою межею")
+    scan_start_utc = to_utc(scan_start_at)
+    if boundary_utc <= scan_start_utc:
+        return None
+    start = max(previous_boundary(revision.trigger, boundary_utc), scan_start_utc)
+    if revision.effective_from is not None:
+        start = max(start, revision.effective_from)
+    return Window(start, boundary_utc)
+
+
+def due_boundaries_rev(
+    revisions: tuple[Revision, ...],
+    last_materialized: datetime,
+    now: datetime,
+    grace_seconds: int,
+) -> DuePlan:
+    """Як `due_boundaries`, але з ревізіями розкладу."""
+    if grace_seconds < 0:
+        raise ScheduleError("grace_seconds не може бути від'ємним")
+    now_utc = to_utc(now)
+    grace = timedelta(seconds=grace_seconds)
+    run: list[datetime] = []
+    skipped: list[datetime] = []
+    cursor = to_utc(last_materialized)
+    while True:
+        boundary = next_boundary_rev(revisions, cursor)
+        if boundary > now_utc:
+            break
+        (run if now_utc - boundary <= grace else skipped).append(boundary)
+        cursor = boundary
+    return DuePlan(tuple(run), tuple(skipped))
+
+
+def apply_schedule_change(
+    revisions: tuple[Revision, ...], new_trigger: Trigger, now: datetime
+) -> tuple[Revision, ...]:
+    """Застосовує новий розклад з наступної межі старого (C), v4 §7.6.
+
+    Ще не чинна (pending) ревізія замінюється, а не накопичується. Якщо новий
+    розклад збігається з чинним, ревізії не змінюються.
+    """
+    _check_revisions(revisions)
+    now_utc = to_utc(now)
+    active = tuple(r for r in revisions if r.effective_from is None or r.effective_from <= now_utc)
+    if active[-1].trigger == new_trigger:
+        return active
+    cutover = next_boundary_rev(active, now_utc)
+    return (*active, Revision(new_trigger, cutover))

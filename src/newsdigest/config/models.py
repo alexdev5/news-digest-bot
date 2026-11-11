@@ -71,7 +71,7 @@ Label = Annotated[str, Field(max_length=128)]
 class AiDefaults(StrictModel):
     model: str = Field(DEFAULT_MODEL, min_length=1)
     reasoning_effort: ReasoningEffort = "medium"
-    max_output_tokens: int = Field(8192, ge=256, le=128_000)
+    max_output_tokens: int | None = Field(None, ge=256, le=128_000)
 
 
 class PublicationDefaults(StrictModel):

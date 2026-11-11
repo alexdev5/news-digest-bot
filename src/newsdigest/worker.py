@@ -1,10 +1,4 @@
-"""Worker: чекає планових меж цільових каналів і сканує їхні вікна (етап 2).
-
-Між межами джерела не читаються (D-004, T11): цикл лише чекає часу, оновлює
-heartbeat і прибирає прострочений кеш. На межі — сканування вікна в кеш run.
-Обробка AI, рендер і публікація — етапи 3–5; зараз run завершується статусом
-`scanned`, а кеш живе до TTL.
-"""
+"""Планове сканування, побудова й доставка; між межами — тільки recovery і heartbeat."""
 
 from __future__ import annotations
 
@@ -15,6 +9,7 @@ from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from uuid import uuid4
 
 from newsdigest.cache.run_cache import CacheManager, RunManifest
 from newsdigest.config.effective import effective_channel
@@ -36,6 +31,7 @@ from newsdigest.state.store import (
     Heartbeat,
     RevisionState,
     RunRecord,
+    RuntimeState,
     SourceCoverage,
     StateStore,
 )
@@ -49,7 +45,12 @@ Clock = Callable[[], datetime]
 GatewayFactory = Callable[[], AbstractAsyncContextManager[TelegramGateway]]
 
 MAX_IDLE_SECONDS = 30.0
+HEARTBEAT_SECONDS = 30.0
 PUBLISHABLE = ("ready", "partial", "uncertain", "held")
+# Доставку зупинила причина, яку усуває лише власник (права в каналі, вхід в акаунт).
+# Worker повторює спроби (після відновлення прав продовжить сам), але healthcheck
+# і status показують проблему, щоб вона не була тихою.
+OWNER_ACTION_CODES = frozenset({"no_post_rights", "auth_required"})
 COVERING_STATUSES = ("ready", "published", "partial", "uncertain", "held")
 RUN_STATUSES = ("published", "partial", "uncertain", "held", "failed")
 DEFAULT_RUN_TIMEOUT_SECONDS = 600
@@ -83,8 +84,10 @@ class RunExecutor:
         self._clock = clock
         self._timeout = run_timeout_seconds
 
-    async def scan(self, channel: TargetChannel, window: Window) -> RunOutcome:
-        key = digest_key(channel.id, window)
+    async def scan(
+        self, channel: TargetChannel, window: Window, *, run_key: str | None = None
+    ) -> RunOutcome:
+        key = run_key or digest_key(channel.id, window)
         cache, manifest = self._cache.open_or_create(
             key, channel.id, window.start_utc, window.end_utc, self._clock()
         )
@@ -154,7 +157,7 @@ class Worker:
         self._clock = clock
         self._channel_locks: dict[str, asyncio.Lock] = {}
         self._active: set[str] = set()
-        self._resume: dict[str, list[tuple[datetime, Window]]] = {}
+        self._resume: dict[str, list[RunRecord]] = {}
 
     def _enabled(self) -> list[TargetChannel]:
         return [c for c in self._config.target_channels if c.enabled]
@@ -197,8 +200,7 @@ class Worker:
             if run.status not in ("materialized", "scanning"):
                 continue
             if now - run.boundary_utc <= grace:
-                window = Window(run.window_start_utc, run.window_end_utc)
-                self._resume.setdefault(channel.id, []).append((run.boundary_utc, window))
+                self._resume.setdefault(channel.id, []).append(run)
             else:
                 run.status = "failed"
                 run.error_code = "interrupted"
@@ -216,11 +218,26 @@ class Worker:
         return max(soonest, 0.5)
 
     async def tick(self) -> None:
-        await self._handle_manual_requests()
-        now = self._clock()
-        await asyncio.gather(*(self._process_channel(c, now) for c in self._enabled()))
-        self._cleanup_cache(self._clock())
-        self._store.save_heartbeat(Heartbeat(at_utc=self._clock(), pid=os.getpid(), phase="idle"))
+        pulse = asyncio.create_task(self._heartbeat())
+        try:
+            await self._handle_manual_requests()
+            now = self._clock()
+            await asyncio.gather(*(self._process_channel(c, now) for c in self._enabled()))
+            self._cleanup_cache(self._clock())
+        finally:
+            pulse.cancel()
+            with suppress(asyncio.CancelledError):
+                await pulse
+            self._store.save_heartbeat(
+                Heartbeat(at_utc=self._clock(), pid=os.getpid(), phase="idle")
+            )
+
+    async def _heartbeat(self) -> None:
+        while True:
+            self._store.save_heartbeat(
+                Heartbeat(at_utc=self._clock(), pid=os.getpid(), phase="processing")
+            )
+            await asyncio.sleep(HEARTBEAT_SECONDS)
 
     async def run_forever(self, stop: asyncio.Event) -> None:
         self.initialize()
@@ -235,15 +252,27 @@ class Worker:
     async def _process_channel(self, channel: TargetChannel, now: datetime) -> None:
         lock = self._channel_locks.setdefault(channel.id, asyncio.Lock())
         async with lock:
+            if self._delivery is not None:
+                await self.publish_pending(channel, now)
             eff = effective_channel(self._config, channel)
             runtime = self._store.load_runtime()
             state = runtime.channels.get(channel.id)
             if state is None:
                 return
             revisions = state.revision_tuple()
-            for boundary, window in sorted(self._resume.pop(channel.id, [])):
+            for run in sorted(self._resume.pop(channel.id, []), key=lambda r: r.boundary_utc):
+                current = self._store.load_runtime().channels[channel.id].find_run(run.digest_key)
+                if current is None or current.status not in ("materialized", "scanning"):
+                    continue
                 log.info("run_resumed", extra={"channel": channel.id})
-                await self._execute(channel, boundary, window)
+                await self._execute(
+                    channel,
+                    run.boundary_utc,
+                    Window(run.window_start_utc, run.window_end_utc),
+                    manual=run.manual,
+                    request_id=run.manual_request_id,
+                    ignore_published=run.ignore_published,
+                )
             runtime = self._store.load_runtime()
             state = runtime.channels[channel.id]
             plan = due_boundaries_rev(
@@ -277,7 +306,11 @@ class Worker:
                 candidates.append(from_db)
         state = self._store.load_runtime().channels.get(channel_id)
         if state is not None:
-            candidates.extend(r.window_end_utc for r in state.runs if r.status in COVERING_STATUSES)
+            candidates.extend(
+                r.window_end_utc
+                for r in state.runs
+                if r.status in COVERING_STATUSES and r.manual_request_id is None
+            )
         return max(candidates) if candidates else None
 
     async def _after_covered(self, channel_id: str, window: Window) -> Window | None:
@@ -292,39 +325,95 @@ class Worker:
     def manual_window(
         self, channel: TargetChannel, now: datetime, covered: datetime | None
     ) -> Window | None:
-        """Вікно ручного прогону: від max(найближча минула межа, вже покрите, scan_start) до now."""
+        """Останній завершений інтервал schedule, обрізаний уже покритим (D-031)."""
         state = self._store.load_runtime().channels.get(channel.id)
         trigger = effective_channel(self._config, channel).trigger
         revisions = state.revision_tuple() if state is not None else (Revision(trigger),)
-        start = max(
-            previous_boundary_rev(revisions, now),
-            channel.scan_start_at,
-            covered or channel.scan_start_at,
-        )
-        return Window(start, now) if start < now else None
+        end = previous_boundary_rev(revisions, now + timedelta(microseconds=1))
+        planned = window_for_boundary_rev(revisions, end, channel.scan_start_at)
+        if planned is None:
+            return None
+        start = max(planned.start_utc, covered or planned.start_utc)
+        return Window(start, end) if start < end else None
 
     async def run_now(self, channel: TargetChannel) -> RunRecord | None:
-        """Ручний прогін (D-029): scan → AI → публікація вікна [початок, зараз)."""
+        """Ручний прогін останнього завершеного планового інтервалу (D-031)."""
         lock = self._channel_locks.setdefault(channel.id, asyncio.Lock())
         async with lock:
             now = self._clock()
+            if self._delivery is not None:
+                await self.publish_pending(channel, now)
             window = self.manual_window(channel, now, await self.covered_until(channel.id))
             if window is None:
                 log.info("manual_run_nothing_new", extra={"channel": channel.id})
                 return None
             log.info("manual_run_started", extra={"channel": channel.id})
-            await self._execute(channel, now, window, manual=True)
+            await self._execute(channel, window.end_utc, window, manual=True)
             key = digest_key(channel.id, window)
             return self._store.load_runtime().channels[channel.id].find_run(key)
 
+    @staticmethod
+    def validate_manual_window(channel: TargetChannel, window: Window, now: datetime) -> None:
+        if not channel.enabled:
+            raise ValueError("цільовий канал вимкнений")
+        if window.start_utc < channel.scan_start_at:
+            raise ValueError("--from раніше scan_start_at каналу")
+        if window.end_utc > now:
+            raise ValueError("--to не може бути в майбутньому")
+
+    async def run_window(
+        self,
+        channel: TargetChannel,
+        window: Window,
+        *,
+        ignore_published: bool = False,
+        request_id: str | None = None,
+    ) -> RunRecord:
+        """Explicit scan → AI → publication, independent of scheduled coverage (D-033)."""
+        self.validate_manual_window(channel, window, self._clock())
+        request_id = request_id or uuid4().hex
+        key = digest_key(channel.id, window, request_id=request_id)
+        lock = self._channel_locks.setdefault(channel.id, asyncio.Lock())
+        async with lock:
+            if self._delivery is not None:
+                await self.publish_pending(channel, self._clock())
+            state = self._store.load_runtime().channels[channel.id]
+            existing = state.find_run(key)
+            if existing is not None and existing.status not in ("materialized", "scanning"):
+                return existing  # a queued request replay must never regenerate a sent plan
+            await self._execute(
+                channel,
+                existing.boundary_utc if existing else self._clock(),
+                window,
+                manual=True,
+                request_id=request_id,
+                ignore_published=ignore_published,
+            )
+            record = self._store.load_runtime().channels[channel.id].find_run(key)
+            assert record is not None
+            return record
+
     async def _handle_manual_requests(self) -> None:
         enabled = {c.id: c for c in self._enabled()}
-        for request in self._store.take_manual_requests():
+        for path, request in self._store.pending_manual_requests():
             channel = enabled.get(request.channel_id)
             if channel is None:
                 log.warning("manual_request_unknown_channel", extra={"channel": request.channel_id})
+                path.unlink(missing_ok=True)
                 continue
-            await self.run_now(channel)
+            try:
+                if request.window_start_utc is not None and request.window_end_utc is not None:
+                    await self.run_window(
+                        channel,
+                        Window(request.window_start_utc, request.window_end_utc),
+                        ignore_published=request.ignore_published,
+                        request_id=request.request_id,
+                    )
+                else:
+                    await self.run_now(channel)
+            except ValueError:
+                log.warning("manual_request_invalid_window", extra={"channel": channel.id})
+            path.unlink(missing_ok=True)
 
     async def _materialize(
         self, channel: TargetChannel, boundary: datetime, window: Window | None
@@ -337,10 +426,17 @@ class Worker:
             await self._execute(channel, boundary, window)
 
     async def _execute(
-        self, channel: TargetChannel, boundary: datetime, window: Window, manual: bool = False
+        self,
+        channel: TargetChannel,
+        boundary: datetime,
+        window: Window,
+        manual: bool = False,
+        *,
+        request_id: str | None = None,
+        ignore_published: bool = False,
     ) -> None:
         now = self._clock()
-        key = digest_key(channel.id, window)
+        key = digest_key(channel.id, window, request_id=request_id)
         runtime = self._store.load_runtime()
         state = runtime.channels[channel.id]
         record = state.find_run(key) or RunRecord(
@@ -352,6 +448,8 @@ class Worker:
             created_at_utc=now,
             updated_at_utc=now,
             manual=manual,
+            manual_request_id=request_id,
+            ignore_published=ignore_published,
         )
         record.status = "scanning"
         record.updated_at_utc = now
@@ -362,11 +460,18 @@ class Worker:
         self._active.add(key)
         digest: DigestOutcome | None = None
         try:
-            outcome = await self._executor.scan(channel, window)
+            outcome = await self._executor.scan(channel, window, run_key=key)
             if outcome.status == "scanned" and self._builder is not None:
                 eff = effective_channel(self._config, channel)
                 prompt = self._prompts.get(channel.id, "")
-                digest = await self._builder.build(eff, prompt, window, key)
+                digest = await self._builder.build(
+                    eff,
+                    prompt,
+                    window,
+                    key,
+                    ignore_published=ignore_published,
+                    require_published_history=request_id is not None,
+                )
         except Exception:
             # Непередбачена помилка не зупиняє worker: run позначається failed,
             # інші канали й наступні межі працюють далі.
@@ -384,16 +489,18 @@ class Worker:
         record.updated_at_utc = self._clock()
         if outcome.summary is not None:
             record.coverage = {
-                sid: SourceCoverage.model_validate({"status": status})
-                for sid, status in outcome.summary.statuses.items()
+                sid: SourceCoverage.model_validate(detail)
+                for sid, detail in outcome.summary.details.items()
             }
             record.excluded = dict(outcome.summary.excluded)
+            record.excluded_sources = list(outcome.summary.excluded_sources)
         if digest is not None:
             if digest.status == "ready" and digest.built is not None:
                 record.status = "ready"
                 record.events = len(digest.built.events)
                 record.parts = len(digest.built.plan.parts)
                 record.ai_tokens = digest.built.tokens or {}
+                record.excluded_sources.extend(digest.built.candidates.excluded_sources)
                 for reason, count in digest.built.candidates.excluded.items():
                     record.excluded[reason] = record.excluded.get(reason, 0) + count
             elif digest.status == "failed":
@@ -409,7 +516,7 @@ class Worker:
                 "channel": channel.id,
                 "digest_key": key[:12],
                 "status": record.status,
-                "error_code": outcome.error_code,
+                "error_code": record.error_code,
                 "in_window": outcome.summary.in_window if outcome.summary else 0,
                 "events": record.events,
                 "parts": record.parts,
@@ -420,7 +527,9 @@ class Worker:
         if record.status == "ready" and self._delivery is not None:
             await self.publish_pending(channel, record.boundary_utc)
 
-    async def publish_pending(self, channel: TargetChannel, up_to: datetime) -> None:
+    async def publish_pending(
+        self, channel: TargetChannel, up_to: datetime, *, force: bool = False
+    ) -> None:
         """Публікує готові/незавершені runs каналу хронологічно; зупиняється на першому збої.
 
         Новіший випуск не обганяє незавершену старішу серію (v4 §7.4, T71).
@@ -431,10 +540,26 @@ class Worker:
             (r for r in state.runs if r.status in PUBLISHABLE and r.boundary_utc <= up_to),
             key=lambda r: r.boundary_utc,
         )
-        blocked = False
+        guards = self._store.load_guards().guards.values()
+        started = {g.digest_key for g in guards if g.phase != "prepared"}
+        unresolved = {
+            g.digest_key
+            for g in guards
+            if g.channel_id == channel.id and g.phase != "committed" and g.digest_key in started
+        }
+        # Guards remain authoritative even if a run record is missing/legacy-failed.
+        pending_keys = {r.digest_key for r in pending}
+        blocked = bool(unresolved - pending_keys)
         for run in pending:
             if blocked:
                 self._update_run(channel.id, run.digest_key, status="held")
+                continue
+            if (
+                not force
+                and run.next_delivery_attempt_utc
+                and run.next_delivery_attempt_utc > self._clock()
+            ):
+                blocked = True
                 continue
             meta = PublishMeta(
                 scheduled_at_utc=run.boundary_utc,
@@ -453,7 +578,17 @@ class Worker:
                 self._active.discard(run.digest_key)
             status = result.status if result.status in RUN_STATUSES else "held"
             self._update_run(
-                channel.id, run.digest_key, status=status, error_code=result.error_code
+                channel.id,
+                run.digest_key,
+                status=status,
+                error_code=result.error_code,
+                delivery_attempts=run.delivery_attempts + 1,
+                next_delivery_attempt_utc=(
+                    self._clock()
+                    + timedelta(seconds=min(60 * 2 ** min(run.delivery_attempts, 4), 900))
+                    if status in PUBLISHABLE
+                    else None
+                ),
             )
             log.info(
                 "publish_finished",
@@ -465,6 +600,11 @@ class Worker:
                     "parts": f"{result.committed}/{result.total}",
                 },
             )
+            if result.error_code in OWNER_ACTION_CODES:
+                log.error(
+                    "publish_needs_owner_action",
+                    extra={"channel": channel.id, "error_code": result.error_code},
+                )
             if result.status != "published" and result.error_code != "plan_missing":
                 blocked = True
 
@@ -481,13 +621,33 @@ class Worker:
 
     def _cleanup_cache(self, now: datetime) -> None:
         removed = set(self._cache.cleanup_expired(now, self._active))
+        self._cache.inspection().cleanup_expired(now)
         if removed:
             runtime = self._store.load_runtime()
+            started = {
+                g.digest_key
+                for g in self._store.load_guards().guards.values()
+                if g.phase != "prepared"
+            }
             for state in runtime.channels.values():
                 for run in state.runs:
-                    if run.digest_key in removed and run.status in ("scanned", "ready", "held"):
-                        run.status = "cache_expired"
+                    if run.digest_key in removed and run.status != "published":
+                        if run.digest_key in started:
+                            run.status = "held"
+                            run.error_code = "plan_missing_after_send"
+                        else:
+                            run.status = "cache_expired"
             self._store.save_runtime(runtime)
             log.info("cache_expired", extra={"runs": len(removed)})
         if self._cache.over_limit():
             log.error("cache_over_limit", extra={"bytes": self._cache.total_bytes()})
+
+
+def owner_action_needed(runtime: RuntimeState) -> list[str]:
+    """Незавершені випуски, доставку яких блокує причина для власника (без мережі)."""
+    return [
+        f"{channel_id}: {run.error_code}"
+        for channel_id, state in runtime.channels.items()
+        for run in state.runs
+        if run.status in PUBLISHABLE and run.error_code in OWNER_ACTION_CODES
+    ]

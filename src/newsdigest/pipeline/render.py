@@ -3,11 +3,12 @@
 Формат пункту (D-025):
 
     N. <емодзі> <жирний заголовок>
-    Суть у 1–2 реченнях. — Назва джерела
+    Стислий виклад зі збереженням суті. — Назва джерела
 
 Рівно назва джерела — text-url посилання на конкретний допис; заголовок — bold.
 Заголовок випуску теж жирний; для N>1 частин до нього додається `· Частина i/N`.
-Нумерація наскрізна для всієї серії. Поділ — лише між цілими пунктами; N
+Нумерація наскрізна для всієї серії. Поділ — між цілими пунктами; пункт, довший за
+повідомлення, продовжується в наступній частині (між абзацами/реченнями). N
 перераховується, доки заголовки не перестануть змінювати розкладку (9→10, 99→100).
 Довжина — у code points, offsets — у UTF-16. Чистий модуль: без мережі й файлів.
 """
@@ -131,12 +132,21 @@ def _item(number: int, event: Event) -> _Block:
     if event.is_update and not title.startswith(UPDATE_PREFIX.strip()):
         title = UPDATE_PREFIX + title
     emoji = one_line(event.emoji)
-    summary = one_line(event.summary)
+    summary = "\n\n".join(one_line(p) for p in event.summary.split("\n\n") if p.strip())
 
     out = _Builder()
     out.plain(f"{number}. " + (f"{emoji} " if emoji else ""))
-    out.styled(title, "bold")
-    out.plain(f"\n{summary} — " if summary else " — ")
+    if event.layout == "compact":
+        out.plain(title)
+    else:
+        out.styled(title, "bold")
+    if summary:
+        out.plain(f"\n{summary}")
+    if event.bullets:
+        out.plain("\n\n" + "\n".join("▪️ " + one_line(b) for b in event.bullets))
+    if event.quote:
+        out.plain(f"\n\n«{one_line(event.quote)}»")
+    out.plain("\n\n— " if event.bullets or event.quote else " — ")
     out.styled(clean_label(source.label), "text_url", source.url)
     return _Block(event.event_id, out.text, tuple(out.entities))
 
@@ -168,10 +178,73 @@ def _length(head: str, items: Sequence[_Block]) -> int:
     return len(head) + len(ITEM_SEPARATOR) + len(ITEM_SEPARATOR.join(i.text for i in items))
 
 
+_CUTS = ("\n\n", "\n", ". ", "; ", ", ", " ")
+
+
+def _cp_spans(text: str, entities: Sequence[Entity]) -> list[tuple[int, int]]:
+    """Межі entities у code points (offsets entities — у UTF-16)."""
+    to_cp: dict[int, int] = {}
+    position = 0
+    for index, char in enumerate(text):
+        to_cp[position] = index
+        position += utf16_len(char)
+    to_cp[position] = len(text)
+    return [(to_cp[e.offset], to_cp[e.offset + e.length]) for e in entities]
+
+
+def _clip(entities: Sequence[Entity], start: int, end: int) -> list[Entity]:
+    """Entities у межах [start,end) UTF-16, зсунуті на початок фрагмента."""
+    clipped: list[Entity] = []
+    for e in entities:
+        lo, hi = max(e.offset, start), min(e.offset + e.length, end)
+        if hi > lo:
+            clipped.append(Entity(e.kind, lo - start, hi - lo, e.url))
+    return clipped
+
+
+def _split_block(block: _Block, room: int) -> list[_Block]:
+    """Ділить завеликий пункт між абзацами → рядками → реченнями → словами.
+
+    Розріз не проходить усередині заголовка чи посилання, якщо є інший варіант.
+    """
+    pieces: list[_Block] = []
+    text, entities = block.text, list(block.entities)
+    while len(text) > room:
+        spans = _cp_spans(text, entities)
+        cut = room
+        for separator in _CUTS:
+            found = text.rfind(separator, room // 3, room)
+            while found > 0 and any(lo < found < hi for lo, hi in spans):
+                found = text.rfind(separator, room // 3, found)
+            if found > 0:
+                cut = found + (len(separator) if separator.strip() else 0)
+                break
+        head = text[:cut].rstrip()
+        tail = text[cut:].lstrip()
+        start = len(text) - len(tail)
+        pieces.append(_Block(block.event_id, head, tuple(_clip(entities, 0, utf16_len(head)))))
+        offset = utf16_len(text[:start])
+        entities = _clip(entities, offset, utf16_len(text))
+        text = tail
+    pieces.append(_Block(block.event_id, text, tuple(entities)))
+    return pieces
+
+
+def _fit(items: Sequence[_Block], header: Header, count: int, limit: int) -> list[_Block]:
+    head = max(len(header.render(count, count)), len(header.render(1, count)))
+    room = limit - head - len(ITEM_SEPARATOR)
+    if room < 1:
+        raise RenderError("header_too_long", f"заголовок не лишає місця для тексту ({limit})")
+    fitted: list[_Block] = []
+    for item in items:
+        fitted.extend(_split_block(item, room) if len(item.text) > room else [item])
+    return fitted
+
+
 def _pack(items: Sequence[_Block], header: Header, count: int, limit: int) -> list[list[_Block]]:
     parts: list[list[_Block]] = []
     current: list[_Block] = []
-    for item in items:
+    for item in _fit(items, header, count, limit):
         head = header.render(len(parts) + 1, count)
         candidate = [*current, item]
         if _length(head, candidate) <= limit:
@@ -179,13 +252,6 @@ def _pack(items: Sequence[_Block], header: Header, count: int, limit: int) -> li
             continue
         if current:
             parts.append(current)
-            head = header.render(len(parts) + 1, count)
-        if _length(head, [item]) > limit:
-            raise RenderError(
-                "item_too_long",
-                f"пункт {item.event_id} не вміщується в повідомлення навіть сам "
-                f"({_length(head, [item])} > {limit})",
-            )
         current = [item]
     if current:
         parts.append(current)
@@ -193,7 +259,10 @@ def _pack(items: Sequence[_Block], header: Header, count: int, limit: int) -> li
 
 
 def render_series(events: Sequence[Event], header: Header, max_chars: int) -> list[RenderedPart]:
-    """Усі події → упорядкований повний набір частин. Порожній список подій — без частин."""
+    """Усі події → упорядкований повний набір частин. Порожній список подій — без частин.
+
+    Пункт, що не вміщується в одне повідомлення, продовжується в наступній частині.
+    """
     if not events:
         return []
     items = [_item(number, event) for number, event in enumerate(events, start=1)]
@@ -208,6 +277,7 @@ def render_series(events: Sequence[Event], header: Header, max_chars: int) -> li
 
     parts = [_assemble(i + 1, count, header, group) for i, group in enumerate(packed)]
     placed = [eid for part in parts for eid in part.event_ids]
+    placed = [eid for i, eid in enumerate(placed) if i == 0 or placed[i - 1] != eid]
     if placed != [e.event_id for e in events]:
         raise RenderError("coverage_mismatch", "подія відсутня або продубльована в частинах")
     return parts
@@ -226,5 +296,5 @@ def _assemble(index: int, count: int, header: Header, items: Sequence[_Block]) -
         count=count,
         text=out.text,
         entities=tuple(out.entities),
-        event_ids=tuple(i.event_id for i in items),
+        event_ids=tuple(dict.fromkeys(i.event_id for i in items)),
     )

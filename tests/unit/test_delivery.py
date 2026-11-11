@@ -91,7 +91,9 @@ async def test_series_published_in_order_with_planned_random_ids(tmp_path: Path)
     assert env.phases() == ["committed"] * 3
     row = env.parts.rows[p.parts[0].part_key]
     assert row.confirmation_method == "ack" and row.destination_message_id == 1001
-    assert row.items and row.source_message_ids
+    assert row.items
+    # Усі події фікстури з одного допису: він використаний з останньою частиною (D-037).
+    assert env.parts.rows[p.parts[-1].part_key].source_message_ids
     assert env.parts.rows[p.parts[1].part_key].ai_usage_summary is None
 
 
@@ -167,7 +169,7 @@ async def test_rejected_send_is_not_uncertain(tmp_path: Path) -> None:
     env = Env(tmp_path)
     env.gateway.send_errors.append(SendRejected("send_rejected", "ChatWriteForbiddenError"))
     result = await env.publisher().publish(plan(), TARGET, META)
-    assert (result.status, result.error_code) == ("failed", "send_rejected")
+    assert (result.status, result.error_code) == ("partial", "send_rejected")
     assert env.phases() == ["prepared", "prepared", "prepared"]
 
 

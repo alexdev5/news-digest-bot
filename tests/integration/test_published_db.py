@@ -223,3 +223,16 @@ def test_insert_confirmed_part_is_idempotent(pg_engine: Engine) -> None:
     assert insert_confirmed_part(pg_engine, part) is False
     assert committed_part_keys(pg_engine, DIGEST) == {part.part_key}
     assert used_message_ids(pg_engine, -1004402354838) == {77}
+
+
+def test_manual_publications_keep_source_history_but_not_schedule_frontier(
+    pg_engine: Engine,
+) -> None:
+    from newsdigest.storage.published_repo import last_published_window_end, published_source_keys
+
+    manual = digest_key("news", WINDOW, request_id="a" * 32)
+    put(pg_engine, row(digest_key=manual, part_key=part_key(manual, 1)))
+    assert last_published_window_end(pg_engine, "news") is None
+    assert ("telegram", -1002, 7) in published_source_keys(pg_engine, "news")
+    put(pg_engine, row(message_id=101))
+    assert last_published_window_end(pg_engine, "news") == WINDOW.end_utc

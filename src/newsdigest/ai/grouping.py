@@ -1,39 +1,54 @@
-"""AI-групування кандидатів у події з перевіркою відповіді моделі (D-009, D-001, D-011).
+"""AI-групування кандидатів у події (D-009, D-011, D-036).
 
-Модель групує й пише виклад; код перевіряє: усі candidate_id відомі, кожен
-кандидат ужито рівно один раз, поля в межах, числа у викладі є в текстах
-джерел цієї події. Невдала перевірка → до 2 спроб із поясненням помилок (v4 §12.3).
-Кандидати, яких модель так і не врахувала, рахуються як `ai_unprocessed` і не
-публікуються (D-019) — але й не губляться мовчки: їх видно в лічильниках.
+Модель групує й пише виклад. Код:
+- блокує лише структурні помилки (невідомі/двічі вжиті candidate_id, порожній пункт);
+- виправляє оформлення сам (`editorial.normalize_event`);
+- щодо змісту (числа, довжина, атрибуція каналу) дає моделі одну спробу виправити,
+  далі приймає пункт із попередженням у лічильниках.
+
+Невраховані після спроб дописи окремо повторюються по одному; що не вдалося —
+публікується без них, а їхні ID потрапляють у `ai_unprocessed` (не позначаються
+використаними). Випуск зупиняється (D-011) лише коли AI не дав жодної придатної
+відповіді або впав API. Після кількох пачок чи повторів окремий запит лише
+знаходить дублікати (групи ID); переписуються з оригіналів тільки ці групи.
 """
 
 from __future__ import annotations
 
 import hashlib
-import re
-from collections.abc import Sequence
-from dataclasses import dataclass, field
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from newsdigest.ai.editorial import (
+    SHORT_SOURCE_CHARS,
+    body_text,
+    content_issues,
+    normalize_event,
+    originals_for,
+    quote_in,
+    source_budget,
+    target_chars,
+)
 from newsdigest.ai.prompts import (
+    DEDUPE_INSTRUCTIONS,
     EXCLUSION_REASONS,
     PROMPT_VERSION,
     SYSTEM_INSTRUCTIONS,
+    dedupe_schema,
     response_schema,
 )
 from newsdigest.ai.provider import AiError, AiUsage, OpenAIProvider
-from newsdigest.pipeline.candidates import Candidate
+from newsdigest.pipeline.candidates import Candidate, SourceRef
 from newsdigest.pipeline.events import Event
 
 MAX_ATTEMPTS = 3
+RESCUE_ATTEMPTS = 2
 MAX_BATCH_CHARS = 60_000
-MAX_CANDIDATE_CHARS = 4_000
-MAX_TITLE_CHARS = 120
-MAX_SUMMARY_CHARS = 450
-MAX_EMOJI_CHARS = 8
-_NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
+TraceSink = Callable[[dict[str, Any]], Awaitable[None]]
+Originals = Mapping[str, tuple[Candidate, ...]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,10 +65,22 @@ class GroupingResult:
     events: list[Event] = field(default_factory=list)
     excluded: dict[str, int] = field(default_factory=dict)
     unprocessed: list[str] = field(default_factory=list)
+    unfinished_refs: set[SourceRef] = field(default_factory=set)
+    """Дописи з необробленим змістом: не позначаються використаними в БД."""
     usage: list[AiUsage] = field(default_factory=list)
     batches: int = 0
+    retried: bool = False
+    excluded_sources: list[dict[str, str | int]] = field(default_factory=list)
     problems: list[str] = field(default_factory=list)
-    """Зауваження до відповіді моделі, що лишились після всіх спроб (без текстів новин)."""
+    """Зауваження, що лишились після всіх спроб (без текстів новин)."""
+    members: dict[str, tuple[Candidate, ...]] = field(default_factory=dict)
+    """event_id → кандидати, з яких подію написано (для переписування дублікатів)."""
+    keep: set[str] = field(default_factory=set)
+    """candidate_id, які модель уже подала як новину: виключати їх не можна."""
+    second_chance: set[str] = field(default_factory=set)
+    """candidate_id, що вже отримали змістові зауваження (далі — попередження)."""
+    accepted_titles: dict[str, list[str]] = field(default_factory=dict)
+    """candidate_id → заголовки вже прийнятих з нього пунктів (допис-підбірка, D-037)."""
 
     def count(self, reason: str, amount: int = 1) -> None:
         self.excluded[reason] = self.excluded.get(reason, 0) + amount
@@ -75,20 +102,12 @@ class ChannelContext:
     published_recent: tuple[PublishedItem, ...] = ()
 
 
-def _numbers(text: str) -> set[str]:
-    return {m.group(0).replace(",", ".") for m in _NUMBER.finditer(text.replace(" ", ""))}
-
-
-def _compact(text: str) -> str:
-    return re.sub(r"(?<=\d)[\s ](?=\d{3}\b)", "", text)
-
-
 def batches(candidates: Sequence[Candidate], limit: int = MAX_BATCH_CHARS) -> list[list[Candidate]]:
     result: list[list[Candidate]] = []
     current: list[Candidate] = []
     size = 0
     for candidate in candidates:
-        length = min(len(candidate.text), MAX_CANDIDATE_CHARS) + 200
+        length = len(candidate.text) + 200
         if current and size + length > limit:
             result.append(current)
             current, size = [], 0
@@ -99,13 +118,36 @@ def batches(candidates: Sequence[Candidate], limit: int = MAX_BATCH_CHARS) -> li
     return result
 
 
+def split_long_candidates(candidates: Sequence[Candidate]) -> list[Candidate]:
+    """Every character survives; fragment IDs retain all original source references."""
+    result: list[Candidate] = []
+    limit = MAX_BATCH_CHARS - 200
+    for c in candidates:
+        if len(c.text) <= limit:
+            result.append(c)
+            continue
+        for index, start in enumerate(range(0, len(c.text), limit)):
+            result.append(
+                Candidate(
+                    f"{c.candidate_id}:fragment{index}", c.text[start : start + limit], c.refs
+                )
+            )
+    return result
+
+
 def build_payload(
-    batch: Sequence[Candidate], context: ChannelContext, feedback: Sequence[str] = ()
+    batch: Sequence[Candidate],
+    context: ChannelContext,
+    feedback: Sequence[str] = (),
+    originals: Originals | None = None,
 ) -> dict[str, Any]:
     tz = context.timezone
+    evidence = originals or {}
+    budgets = {c.candidate_id: source_budget(evidence.get(c.candidate_id, (c,))) for c in batch}
     payload: dict[str, Any] = {
         "prompt_version": PROMPT_VERSION,
-        "topic": context.topic,
+        "channel_description": context.topic,
+        "short_source_chars": SHORT_SOURCE_CHARS,
         "channel_prompt": context.channel_prompt,
         "published_recent": [
             {
@@ -120,8 +162,10 @@ def build_payload(
                 "id": c.candidate_id,
                 "sources": sorted({r.label for r in c.refs}),
                 "time": f"{c.earliest.astimezone(tz):%d.%m %H:%M}",
-                "text": c.text[:MAX_CANDIDATE_CHARS],
+                "text": c.text,
                 "similar_to": list(c.similar_to),
+                "source_chars": budgets[c.candidate_id],
+                "target_chars": target_chars(budgets[c.candidate_id]),
             }
             for c in batch
         ],
@@ -131,22 +175,18 @@ def build_payload(
     return payload
 
 
-def _source_numbers(text: str) -> set[str]:
-    """Числа джерела, включно з частинами дат/дробів: «11.11» дає 11.11 і 11."""
-    numbers = _numbers(text)
-    for number in list(numbers):
-        numbers.update(part for part in number.split(".") if part)
-    return numbers
-
-
 @dataclass(slots=True)
 class Review:
-    """Розбір відповіді моделі: загальні проблеми, придатні й непридатні події."""
+    """Розбір відповіді: загальні проблеми, прийняті й повторювані події."""
 
     global_problems: list[str] = field(default_factory=list)
     good_events: list[dict[str, Any]] = field(default_factory=list)
     bad_events: list[tuple[dict[str, Any], list[str]]] = field(default_factory=list)
     excluded: list[dict[str, Any]] = field(default_factory=list)
+    rejected_exclusions: list[str] = field(default_factory=list)
+    rejected_ids: set[str] = field(default_factory=set)
+    warnings: list[str] = field(default_factory=list)
+    """Коди змістових зауважень, з якими подію прийнято (лічильники `ai_warning_*`)."""
 
     @property
     def problems(self) -> list[str]:
@@ -158,104 +198,131 @@ class Review:
         return ids | {item["candidate_id"] for item in self.excluded}
 
 
-def review(data: dict[str, Any], batch: Sequence[Candidate]) -> Review:
-    """Перевіряє відповідь. Одна погана подія не скасовує решту придатних."""
+def review(
+    data: dict[str, Any],
+    batch: Sequence[Candidate],
+    *,
+    originals: Originals | None = None,
+    timezone: ZoneInfo | None = None,
+    second_chance: set[str] | frozenset[str] = frozenset(),
+    allow_exclusions: bool = True,
+    keep: set[str] | frozenset[str] = frozenset(),
+) -> Review:
+    """Перевіряє відповідь. Одна погана подія не скасовує решту придатних.
+
+    `second_chance` — candidate_id, що вже отримали змістові зауваження: тепер їх
+    приймаємо з попередженням. `keep` — кандидати, яких не можна виключати.
+    """
     by_id = {c.candidate_id: c for c in batch}
+    evidence = originals or {}
     result = Review()
-    channel_names = {r.label for c in batch for r in c.refs if len(r.label) >= 4}
     events = data.get("events")
     excluded = data.get("excluded")
     if not isinstance(events, list) or not isinstance(excluded, list):
         result.global_problems.append("відповідь не відповідає схемі")
         return result
+    if any(not isinstance(e, dict) for e in events + excluded):
+        result.global_problems.append("елемент відповіді не є об'єктом")
+        return result
 
-    usage: dict[str, int] = {}
+    # Один допис може дати кілька РІЗНИХ пунктів (підбірка новин, D-037), але не
+    # може бути водночас у пункті й у виключеннях або виключений двічі.
+    in_events: set[str] = set()
     for event in events:
-        for cid in event.get("candidate_ids") or []:
-            usage[cid] = usage.get(cid, 0) + 1
+        in_events.update(str(c) for c in event.get("candidate_ids") or [])
+    excluded_count: dict[str, int] = {}
     for item in excluded:
-        cid = item.get("candidate_id")
-        usage[cid] = usage.get(cid, 0) + 1
-    unknown = sorted(str(c) for c in usage if c not in by_id)
-    twice = sorted(c for c, n in usage.items() if n > 1 and c in by_id)
+        cid = str(item.get("candidate_id"))
+        excluded_count[cid] = excluded_count.get(cid, 0) + 1
+    unknown = sorted(c for c in in_events | set(excluded_count) if c not in by_id)
+    conflict = sorted(
+        c for c, n in excluded_count.items() if c in by_id and (n > 1 or c in in_events)
+    )
     if unknown:
         result.global_problems.append(f"невідомі candidate_id: {', '.join(unknown)}")
-    if twice:
-        result.global_problems.append(f"кандидати ужито двічі: {', '.join(twice)}")
+    if conflict:
+        result.global_problems.append(
+            f"кандидати і в події, і у виключеннях (або виключені двічі): {', '.join(conflict)}"
+        )
     if result.global_problems:
         return result
 
-    for event in events:
-        ids = [c for c in event.get("candidate_ids") or [] if c in by_id]
-        title = str(event.get("title", "")).strip()
-        summary = str(event.get("summary", "")).strip()
-        label = f"подія «{title[:40]}» ({', '.join(ids) or 'без candidate_ids'})"
-        issues: list[str] = []
+    for raw in events:
+        ids = list(dict.fromkeys(c for c in raw.get("candidate_ids") or [] if c in by_id))
+        label = f"подія ({', '.join(ids) or 'без candidate_ids'})"
         if not ids:
-            issues.append(f"{label}: немає candidate_ids")
-        if not title or len(title) > MAX_TITLE_CHARS:
-            issues.append(f"{label}: заголовок порожній або довший за {MAX_TITLE_CHARS}")
-        if len(summary) > MAX_SUMMARY_CHARS:
-            issues.append(f"{label}: summary довший за {MAX_SUMMARY_CHARS}")
-        if len(str(event.get("emoji", ""))) > MAX_EMOJI_CHARS:
-            issues.append(f"{label}: emoji має бути одним символом")
-        sources = " ".join(_compact(by_id[c].text) for c in ids)
-        missing = _numbers(_compact(f"{title} {summary}")) - _source_numbers(sources)
-        if missing:
-            issues.append(
-                f"{label}: числа {sorted(missing)} відсутні в текстах джерел — "
-                "напиши їх точно як у джерелі або прибери"
-            )
-        text = f"{title} {summary}".casefold()
-        named = sorted(name for name in channel_names if name.casefold() in text)
-        if named:
-            issues.append(
-                f"{label}: не згадуй канали-джерела ({', '.join(named)}) — посилання на "
-                "джерело додається автоматично"
-            )
-        if issues:
-            result.bad_events.append((event, issues))
-        else:
-            result.good_events.append(event)
+            result.bad_events.append((raw, [f"{label}: немає candidate_ids"]))
+            continue
+        selected = [by_id[c] for c in ids]
+        event, _notes = normalize_event(raw, selected, evidence)
+        if not event["title"]:
+            result.bad_events.append((raw, [f"{label}: порожній пункт — напиши суть новини"]))
+            continue
+        issues = content_issues(event, selected, evidence, timezone)
+        if issues and not set(ids) <= second_chance:
+            result.bad_events.append((event, [f"{label}: {text}" for _, text in issues]))
+            continue
+        result.warnings.extend(code for code, _ in issues)
+        result.good_events.append(event)
     for item in excluded:
-        if item.get("reason") in EXCLUSION_REASONS:
-            result.excluded.append(item)
+        cid = str(item["candidate_id"])
+        if item.get("reason") not in EXCLUSION_REASONS or not allow_exclusions or cid in keep:
+            result.rejected_ids.add(cid)
+        if item.get("reason") not in EXCLUSION_REASONS:
+            result.rejected_exclusions.append(
+                f"{cid}: невідома причина виключення {item.get('reason')!r} — це новина, "
+                "поверни її подією"
+            )
+        elif not allow_exclusions or cid in keep:
+            result.rejected_exclusions.append(
+                f"{cid}: не можна виключати новину замість виправлення — поверни її подією"
+            )
         else:
-            result.global_problems.append(f"невідома причина виключення {item.get('reason')!r}")
+            result.excluded.append(item)
     return result
 
 
 def validate(data: dict[str, Any], batch: Sequence[Candidate]) -> tuple[list[str], set[str]]:
     """Сумісний короткий вигляд `review`: усі проблеми й враховані candidate_id."""
     checked = review(data, batch)
-    return checked.problems, checked.covered
+    return checked.problems + checked.rejected_exclusions, checked.covered
 
 
-def _event(data: dict[str, Any], batch: Sequence[Candidate]) -> Event:
+def _event(data: dict[str, Any], batch: Sequence[Candidate], originals: Originals) -> Event:
     by_id = {c.candidate_id: c for c in batch}
     ids = sorted(data["candidate_ids"])
     refs = sorted(
         {ref for cid in ids for ref in by_id[cid].refs},
         key=lambda r: (r.date_utc, r.position, r.message_id),
     )
+    quote = str(data.get("quote", ""))
+    quote_id = str(data.get("quote_candidate_id", ""))
     return Event(
-        event_id=hashlib.sha256("|".join(ids).encode()).hexdigest()[:16],
-        title=str(data["title"]).strip().rstrip("."),
-        summary=str(data["summary"]).strip(),
+        event_id=hashlib.sha256(("|".join(ids) + "\n" + str(data["title"])).encode()).hexdigest()[
+            :16
+        ],
+        title=str(data["title"]),
+        summary=str(data["summary"]),
         participants=tuple(refs),
-        emoji=str(data.get("emoji", "")).strip(),
+        emoji=str(data.get("emoji", "")),
         is_update=bool(data.get("is_update", False)),
+        layout=str(data.get("layout", "detailed")),
+        bullets=tuple(b["text"] for b in data.get("bullets", [])),
+        quote=quote,
+        quote_sources=tuple(
+            r
+            for c in originals_for([quote_id], by_id, originals)
+            if quote_in(quote, c)
+            for r in c.refs
+        )
+        if quote and quote_id in by_id
+        else (),
     )
 
 
-async def group_with_ai(
-    candidates: Sequence[Candidate], provider: OpenAIProvider, context: ChannelContext
-) -> GroupingResult:
-    result = GroupingResult()
-    for batch in batches(candidates):
-        result.batches += 1
-        await _group_batch(list(batch), provider, context, result)
-    return result
+async def _trace(trace: TraceSink | None, record: dict[str, Any]) -> None:
+    if trace is not None:
+        await trace(record)
 
 
 async def _group_batch(
@@ -263,45 +330,301 @@ async def _group_batch(
     provider: OpenAIProvider,
     context: ChannelContext,
     result: GroupingResult,
-) -> None:
-    """Приймає придатні події одразу; решту кандидатів повторно надсилає з поясненням."""
+    *,
+    originals: Originals,
+    trace: TraceSink | None = None,
+    attempts: int = MAX_ATTEMPTS,
+    allow_exclusions: bool = True,
+    same_event_hint: bool = False,
+    merge_drafts: Sequence[str] = (),
+    phase: str = "group",
+) -> tuple[list[Candidate], bool]:
+    """Приймає придатні події одразу; решту повторно надсилає з поясненням.
+
+    Повертає (невраховані кандидати, чи прийнято хоч щось). AiError API — далі.
+    """
     pending = batch
     feedback: list[str] = []
+    corrections: list[dict[str, Any]] = []
+    # Спільні для основного проходу й rescue: уже визнана новиною не стає not_news,
+    # а вже отримане змістове зауваження не повторюється.
+    second_chance = result.second_chance
+    keep = result.keep
     accepted_any = False
-    for _attempt in range(MAX_ATTEMPTS):
-        data, usage = await provider.complete_json(
-            SYSTEM_INSTRUCTIONS,
-            build_payload(pending, context, feedback),
-            response_schema(),
-            "digest_events",
-        )
+    for attempt in range(attempts):
+        payload = build_payload(pending, context, feedback, originals)
+        if same_event_hint:
+            payload["same_event_hint"] = True
+        if merge_drafts:
+            payload["merge_drafts"] = list(merge_drafts)
+        accepted_before = {
+            c.candidate_id: result.accepted_titles[c.candidate_id]
+            for c in pending
+            if c.candidate_id in result.accepted_titles
+        }
+        if accepted_before and not merge_drafts:
+            # Інші новини цих дописів уже прийняті — не повторювати їх.
+            payload["already_accepted"] = accepted_before
+        if corrections:
+            payload["corrections"] = corrections
+        record: dict[str, Any] = {
+            "phase": phase,
+            "attempt": attempt + 1,
+            "instructions": SYSTEM_INSTRUCTIONS,
+            "payload": payload,
+        }
+        try:
+            data, usage = await provider.complete_json(
+                SYSTEM_INSTRUCTIONS,
+                payload,
+                response_schema(allow_exclusions=allow_exclusions),
+                "digest_events",
+            )
+        except AiError as exc:
+            await _trace(trace, record | {"error_code": exc.code, "detail": str(exc)})
+            raise
         result.usage.append(usage)
-        checked = review(data, pending)
+        checked = review(
+            data,
+            pending,
+            originals=originals,
+            timezone=context.timezone,
+            second_chance=second_chance,
+            allow_exclusions=allow_exclusions,
+            keep=keep,
+        )
+        await _trace(
+            trace,
+            record
+            | {
+                "response": data,
+                "problems": checked.problems + checked.rejected_exclusions,
+                "covered": sorted(checked.covered),
+                "usage": {"input": usage.input_tokens, "output": usage.output_tokens},
+            },
+        )
         if checked.global_problems:
-            feedback = checked.global_problems[:20]
+            feedback, corrections = checked.global_problems, []
+            result.retried = True
             continue
         for event in checked.good_events:
-            result.events.append(_event(event, pending))
+            accepted = _event(event, pending, originals)
+            while accepted.event_id in result.members:  # той самий допис, той самий заголовок
+                accepted = replace(
+                    accepted,
+                    event_id=hashlib.sha256(accepted.event_id.encode()).hexdigest()[:16],
+                )
+            result.events.append(accepted)
+            result.members[accepted.event_id] = tuple(
+                c for c in pending if c.candidate_id in event["candidate_ids"]
+            )
+            for cid in event["candidate_ids"]:
+                result.accepted_titles.setdefault(cid, []).append(accepted.title)
+        for code in checked.warnings:
+            result.count(f"ai_warning_{code}")
         for item in checked.excluded:
             result.count(f"ai_{item['reason']}")
+            c = next(c for c in pending if c.candidate_id == item["candidate_id"])
+            result.excluded_sources.extend(
+                {
+                    "source_id": r.source_id,
+                    "peer_id": r.peer_id,
+                    "message_id": r.message_id,
+                    "candidate_id": c.candidate_id,
+                    "reason": f"ai_{item['reason']}",
+                }
+                for r in c.refs
+            )
         accepted_any = accepted_any or bool(checked.good_events or checked.excluded)
         covered = checked.covered
-        pending = [c for c in pending if c.candidate_id not in covered]
+        bad_ids = {
+            str(cid) for event, _ in checked.bad_events for cid in event.get("candidate_ids") or []
+        }
+        # Допис-підбірка: одна його новина прийнята, інша потребує виправлення —
+        # допис лишається в обробці, доки не прийнято й ту новину.
+        pending = [c for c in pending if c.candidate_id not in covered or c.candidate_id in bad_ids]
         if not pending:
-            return
-        feedback = [p for _, issues in checked.bad_events for p in issues][:20]
-        missed = [c.candidate_id for c in pending if not _mentioned(c.candidate_id, checked)]
+            return [], accepted_any
+        result.retried = True
+        second_chance |= bad_ids
+        keep |= bad_ids
+        corrections = [
+            {"previous_event": event, "problems": issues} for event, issues in checked.bad_events
+        ]
+        feedback = [p for _, issues in checked.bad_events for p in issues]
+        feedback += checked.rejected_exclusions
+        mentioned = bad_ids | checked.rejected_ids
+        missed = [c.candidate_id for c in pending if c.candidate_id not in mentioned]
         if missed:
             feedback.append(f"не враховано кандидатів: {', '.join(missed)}")
     result.problems.extend(feedback)
-    if not accepted_any:
-        # Жодної придатної відповіді для пачки: AI-прохід не вдався, випуск не публікується.
-        raise AiError("invalid_answer", "; ".join(feedback[:5]) or "немає валідної відповіді")
-    result.unprocessed.extend(c.candidate_id for c in pending)
-    result.count("ai_unprocessed", len(pending))
+    return pending, accepted_any
 
 
-def _mentioned(candidate_id: str, checked: Review) -> bool:
-    return any(
-        candidate_id in (event.get("candidate_ids") or []) for event, _ in checked.bad_events
-    )
+def _mark_unprocessed(result: GroupingResult, candidates: Sequence[Candidate]) -> None:
+    for c in candidates:
+        result.unprocessed.append(c.candidate_id)
+        result.unfinished_refs.update(c.refs)
+        result.count("ai_unprocessed")
+        result.excluded_sources.extend(
+            {
+                "source_id": r.source_id,
+                "peer_id": r.peer_id,
+                "message_id": r.message_id,
+                "candidate_id": c.candidate_id,
+                "reason": "ai_unprocessed",
+            }
+            for r in c.refs
+        )
+
+
+async def group_with_ai(
+    candidates: Sequence[Candidate],
+    provider: OpenAIProvider,
+    context: ChannelContext,
+    *,
+    trace: TraceSink | None = None,
+) -> GroupingResult:
+    result = GroupingResult()
+    fragments = split_long_candidates(candidates)
+    original_by_ref = {r: c for c in candidates for r in c.refs}
+    originals = {
+        c.candidate_id: tuple(dict.fromkeys(original_by_ref[r] for r in c.refs)) for c in fragments
+    }
+    for batch in batches(fragments):
+        result.batches += 1
+        left, accepted_any = await _group_batch(
+            list(batch), provider, context, result, originals=originals, trace=trace
+        )
+        if not left:
+            continue
+        if not accepted_any:
+            # Жодної придатної відповіді на пачку: AI не працює, випуск не виходить (D-011).
+            raise AiError(
+                "invalid_answer", "; ".join(result.problems[-5:]) or "немає валідної відповіді"
+            )
+        for candidate in left:  # окремий маленький запит на кожен проблемний допис
+            rest, _ = await _group_batch(
+                [candidate],
+                provider,
+                context,
+                result,
+                originals=originals,
+                trace=trace,
+                attempts=RESCUE_ATTEMPTS,
+                phase="rescue",
+            )
+            _mark_unprocessed(result, rest)
+    if len(result.events) > 1 and (result.batches > 1 or result.retried):
+        await _deduplicate(result, provider, context, originals, trace)
+    _unique_ids(result.events)
+    return result
+
+
+def _unique_ids(events: list[Event]) -> None:
+    """event_id унікальні в межах випуску (той самий допис і заголовок двічі)."""
+    seen: set[str] = set()
+    for index, event in enumerate(events):
+        event_id = event.event_id
+        while event_id in seen:
+            event_id = hashlib.sha256(event_id.encode()).hexdigest()[:16]
+        seen.add(event_id)
+        if event_id != event.event_id:
+            events[index] = replace(event, event_id=event_id)
+
+
+async def _deduplicate(
+    result: GroupingResult,
+    provider: OpenAIProvider,
+    context: ChannelContext,
+    originals: Originals,
+    trace: TraceSink | None,
+) -> None:
+    """Знаходить дублікати між пачками/повторами; переписує з оригіналів лише їх."""
+    tz = context.timezone
+    drafts = {f"d{i}": event for i, event in enumerate(result.events, start=1)}
+    payload = {
+        "drafts": [
+            {
+                "id": key,
+                "time": f"{e.participants[0].date_utc.astimezone(tz):%d.%m %H:%M}",
+                "text": body_text(
+                    {
+                        "title": e.title,
+                        "summary": e.summary,
+                        "bullets": [{"text": b} for b in e.bullets],
+                    }
+                ),
+            }
+            for key, e in drafts.items()
+        ]
+    }
+    record: dict[str, Any] = {
+        "phase": "dedupe",
+        "attempt": 1,
+        "instructions": DEDUPE_INSTRUCTIONS,
+        "payload": payload,
+    }
+    try:
+        data, usage = await provider.complete_json(
+            DEDUPE_INSTRUCTIONS, payload, dedupe_schema(), "digest_duplicates"
+        )
+    except AiError as exc:
+        # Чернетки вже перевірені; можливий дубль кращий за зупинку всього випуску.
+        await _trace(trace, record | {"error_code": exc.code, "detail": str(exc)})
+        result.problems.append(f"перевірка дублікатів не вдалася: {exc.code}")
+        result.count("ai_dedupe_failed")
+        return
+    result.usage.append(usage)
+    await _trace(trace, record | {"response": data})
+    used: set[str] = set()
+    groups: list[list[str]] = []
+    for group in data.get("duplicates") or []:
+        ids = list(dict.fromkeys(str(i) for i in (group or {}).get("draft_ids") or []))
+        if len(ids) < 2 or any(i not in drafts or i in used for i in ids):
+            continue
+        used.update(ids)
+        groups.append(ids)
+    replaced: dict[str, list[Event]] = {}
+    for ids in groups:
+        group_events = [drafts[i] for i in ids]
+        sources = list(
+            dict.fromkeys(c for e in group_events for c in result.members.get(e.event_id, ()))
+        )
+        merged = GroupingResult()
+        try:
+            left, _ = await _group_batch(
+                sources,
+                provider,
+                context,
+                merged,
+                originals=originals,
+                trace=trace,
+                attempts=RESCUE_ATTEMPTS,
+                allow_exclusions=False,
+                same_event_hint=True,
+                merge_drafts=[payload["drafts"][int(i[1:]) - 1]["text"] for i in ids],
+                phase="merge",
+            )
+        except AiError as exc:
+            result.problems.append(f"злиття дублікатів не вдалося: {exc.code}")
+            result.count("ai_dedupe_failed")
+            left = sources
+        result.usage.extend(merged.usage)
+        if left or len(merged.events) != 1:
+            # Злиття має дати рівно одну подію; інакше (зайва сусідня новина з
+            # підбірки, втрата) лишаємо перевірені чернетки як є.
+            continue
+        update = any(e.is_update for e in group_events)
+        replaced[ids[0]] = [replace(e, is_update=e.is_update or update) for e in merged.events]
+        for i in ids[1:]:
+            replaced[i] = []
+        for reason, amount in merged.excluded.items():
+            result.count(reason, amount)
+        result.members.update(merged.members)
+    if not replaced:
+        return
+    events: list[Event] = []
+    for key, event in drafts.items():
+        events.extend(replaced.get(key, [event]))
+    result.events = events

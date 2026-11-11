@@ -170,7 +170,13 @@ class Publisher:
         for part in plan.parts:
             if part.part_key in state.guards:
                 existing = state.guards[part.part_key]
-                if existing.payload_hash != part.payload_hash:
+                if (
+                    existing.payload_hash != part.payload_hash
+                    or existing.random_id != part.random_id
+                    or existing.manifest_hash != plan.manifest_hash
+                    or existing.part_count != part.count
+                    or existing.destination_peer_id != destination.peer_id
+                ):
                     raise RuntimeError(
                         f"план частини {part.part_key} змінився після початку доставки"
                     )
@@ -231,8 +237,7 @@ class Publisher:
         except (FloodWaitPause, SendRejected) as exc:
             # Telegram запит відхилив або ми його не відправляли — повідомлення немає.
             self._set(guard, phase="prepared", sending_at_utc=None, error_code=exc.code)
-            status = "partial" if isinstance(exc, FloodWaitPause) else "failed"
-            return status, exc.code
+            return "partial", exc.code
         except Exception as exc:
             # Невідомо, чи дійшло (обрив, timeout): лише звірка, без повторного send.
             self._set(guard, phase="uncertain", error_code=type(exc).__name__)
@@ -260,7 +265,9 @@ class Publisher:
         taken |= {
             g.message_id
             for g in self._store.load_guards().guards.values()
-            if g.message_id is not None and g.part_key != guard.part_key
+            if g.message_id is not None
+            and g.part_key != guard.part_key
+            and g.destination_peer_id == guard.destination_peer_id
         }
         candidates = [m for m in messages if m.message_id not in taken]
         if len(candidates) != 1:
@@ -338,12 +345,30 @@ class Delivery:
         self, channel: TargetChannel, digest_key: str, meta: PublishMeta
     ) -> PublishResult:
         run_cache = self._cache.run(digest_key)
+        if run_cache.exists() and run_cache.load_manifest().expires_at_utc <= self._clock():
+            run_cache.delete()
         plan = PublicationPlan.load(run_cache.directory)
         if plan is None:
-            started = any(
-                g.digest_key == digest_key and g.phase != "prepared"
-                for g in self._store.load_guards().guards.values()
-            )
+            guards = [
+                g for g in self._store.load_guards().guards.values() if g.digest_key == digest_key
+            ]
+            if guards and all(g.phase == "committed" for g in guards):
+                # Crash after successful cleanup but before the worker saved 'published'.
+                parts = self._part_store_factory()
+                if parts is None:
+                    return PublishResult(status="partial", error_code="db_unavailable")
+                try:
+                    committed = await asyncio.to_thread(parts.committed_part_keys, digest_key)
+                finally:
+                    parts.close()
+                if (
+                    len(guards) == guards[0].part_count
+                    and {g.part_key for g in guards} <= committed
+                ):
+                    return PublishResult(
+                        status="published", committed=len(guards), total=len(guards)
+                    )
+            started = any(g.phase != "prepared" for g in guards)
             if started:
                 # Кеш зник після початку відправки: лише звірка й ручне рішення (v4 §14.3).
                 return PublishResult(status="held", error_code="plan_missing_after_send")
@@ -360,7 +385,7 @@ class Delivery:
                 scanner = HistoryScanner(gateway, self._limiter, self._store, self._clock)
                 destination = await scanner.resolve_pinned(channel.telegram)
                 if not destination.is_broadcast or not destination.can_post:
-                    return PublishResult(status="failed", error_code="no_post_rights")
+                    return PublishResult(status="partial", error_code="no_post_rights")
                 publisher = Publisher(gateway, self._limiter, self._store, parts, self._clock)
                 result = await publisher.publish(plan, destination, meta)
         except TelegramError as exc:

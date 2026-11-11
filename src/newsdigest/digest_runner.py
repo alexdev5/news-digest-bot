@@ -16,6 +16,7 @@ from sqlalchemy import Engine
 
 from newsdigest.ai.grouping import ChannelContext, PublishedItem, group_with_ai
 from newsdigest.ai.provider import AiError, AiSettings, OpenAIProvider
+from newsdigest.ai.trace import AiTrace
 from newsdigest.cache.run_cache import CacheManager
 from newsdigest.config.effective import EffectiveChannel
 from newsdigest.pipeline.build import BuiltDigest, Grouped, build_digest, draft_grouper
@@ -67,11 +68,21 @@ class DigestBuilder:
         digest_key: str,
         *,
         allow_draft: bool = False,
+        ignore_published: bool = False,
+        require_published_history: bool = False,
     ) -> DigestOutcome:
         channel = eff.channel
         run_cache = self._cache.run(digest_key)
+        trace = AiTrace(run_cache.directory)
         messages = run_cache.read_messages()
-        published, memory = await asyncio.to_thread(self._load_memory, channel.id)
+        published: set[tuple[object, ...]] | None
+        memory: list[PublishedItem]
+        if ignore_published:
+            published, memory = set(), []
+        else:
+            published, memory = await asyncio.to_thread(self._load_memory, channel.id)
+            if require_published_history and published is None:
+                return DigestOutcome("failed", "published_history_unavailable", None, used_ai=False)
 
         provider = self._provider_factory(
             AiSettings(eff.ai.model, eff.ai.reasoning_effort, eff.ai.max_output_tokens)
@@ -88,8 +99,14 @@ class DigestBuilder:
             )
 
             async def grouper(candidates: Sequence[Candidate]) -> Grouped:
-                result = await group_with_ai(candidates, provider, context)
-                return Grouped(result.events, result.excluded, result.tokens)
+                result = await group_with_ai(candidates, provider, context, trace=trace.record)
+                return Grouped(
+                    result.events,
+                    result.excluded,
+                    result.tokens,
+                    result.excluded_sources,
+                    frozenset(result.unfinished_refs),
+                )
 
         try:
             built = await build_digest(
@@ -101,8 +118,10 @@ class DigestBuilder:
                 runtime=self._store.load_runtime(),
                 published=published,
                 grouper=grouper if provider is not None else draft_grouper,
+                run_key=digest_key,
             )
         except AiError as exc:
+            await trace.failure(exc.code, str(exc))
             log.warning("ai_failed", extra={"channel": channel.id, "error_code": exc.code})
             return DigestOutcome("failed", f"ai_{exc.code}", None, used_ai=True, detail=str(exc))
         except RenderError as exc:

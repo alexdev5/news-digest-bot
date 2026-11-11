@@ -5,8 +5,6 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-import pytest
-
 from newsdigest.cache.run_cache import CachedMessage
 from newsdigest.config.loader import parse_config_text
 from newsdigest.config.models import TargetChannel
@@ -14,7 +12,7 @@ from newsdigest.pipeline.build import build_digest, source_maps
 from newsdigest.pipeline.candidates import SourceRef, build_candidates
 from newsdigest.pipeline.events import Event, ordered, preview_summary, visible_source
 from newsdigest.pipeline.plan import build_plan
-from newsdigest.pipeline.render import Header, RenderError, render_series, utf16_len
+from newsdigest.pipeline.render import Header, render_series, utf16_len
 from newsdigest.scheduling import Window
 
 KYIV = ZoneInfo("Europe/Kyiv")
@@ -226,10 +224,11 @@ class TestRender:
         assert all(len(p.text) <= 230 for p in parts)
         assert parts[-1].text.startswith("Новини · 11.11 15:00 · Частина 10/10")
 
-    def test_too_long_item_is_error_not_drop(self) -> None:
-        with pytest.raises(RenderError) as info:
-            render_series([event("big", ref("alpha", 1), summary="z" * 500)], HEADER, 200)
-        assert info.value.code == "item_too_long"
+    def test_too_long_item_continues_without_loss_d036(self) -> None:
+        parts = render_series([event("big", ref("alpha", 1), summary="z" * 500)], HEADER, 200)
+        assert len(parts) > 1 and all(len(p.text) <= 200 for p in parts)
+        assert sum(p.text.count("z") for p in parts) == 500
+        assert all(p.event_ids == ("big",) for p in parts)
 
     def test_utf16_len(self) -> None:
         assert utf16_len("abc") == 3

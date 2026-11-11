@@ -69,3 +69,57 @@ def test_telegram_commands_need_credentials(tmp_path: Path) -> None:
         env={"NEWSDIGEST_STATE_DIR": str(tmp_path), "TELEGRAM_API_ID": "", "TELEGRAM_API_HASH": ""},
     )
     assert result.exit_code == ExitCode.TELEGRAM_ERROR
+
+
+def test_healthcheck_reports_delivery_blocked_by_missing_rights(tmp_path: Path) -> None:
+    import os
+    from datetime import UTC, datetime
+
+    from newsdigest.state.store import (
+        ChannelState,
+        Heartbeat,
+        RevisionState,
+        RunRecord,
+        RuntimeState,
+        StateStore,
+    )
+
+    store = StateStore(tmp_path)
+    now = datetime.now(UTC)
+    store.save_heartbeat(Heartbeat(at_utc=now, pid=os.getpid(), phase="idle"))
+    run = RunRecord(
+        digest_key="d" * 64,
+        boundary_utc=now,
+        window_start_utc=now,
+        window_end_utc=now,
+        status="partial",
+        created_at_utc=now,
+        updated_at_utc=now,
+        error_code="no_post_rights",
+    )
+    from datetime import time
+    from zoneinfo import ZoneInfo
+
+    from newsdigest.scheduling import DailySlots, Revision
+
+    slots = DailySlots(timezone=ZoneInfo("Europe/Kyiv"), times=(time(8),))
+    revision = RevisionState.from_revision(Revision(slots))
+    store.save_runtime(
+        RuntimeState(
+            channels={
+                "news": ChannelState(
+                    activated_at_utc=now,
+                    scan_start_at_utc=now,
+                    revisions=[revision],
+                    last_materialized_utc=now,
+                    runs=[run],
+                )
+            }
+        )
+    )
+    env = {"NEWSDIGEST_STATE_DIR": str(tmp_path)}
+    result = runner.invoke(app, ["healthcheck"], env=env)
+    assert result.exit_code == ExitCode.UNHEALTHY
+    assert "no_post_rights" in result.output
+    status = runner.invoke(app, ["status", "--config", str(EXAMPLE)], env=env)
+    assert "ПОТРІБНА ДІЯ ВЛАСНИКА" in status.output

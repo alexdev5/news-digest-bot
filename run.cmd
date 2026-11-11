@@ -28,9 +28,10 @@ rem   scan       - manual scan of one window: scan --channel <id>
 rem   preview    - scan + build a digest without publishing: preview --channel <id>
 rem   ai-check   - check OPENAI_API_KEY and model access (no paid call)
 rem   reconcile  - check uncertain sends and resume series: reconcile --channel <id>
-rem   run-now    - scan + AI + PUBLISH since last publication: run-now --channel <id>
+rem   run-now    - PUBLISH latest completed schedule interval: run-now --channel <id>
+rem   run-window - PUBLISH --channel <id> --from <ISO> --to <ISO> [--ignore-published]
 rem   worker     - run the scheduler worker in the foreground
-rem   status     - channel state, recent runs, heartbeat
+rem   status     - channel state, recent runs, heartbeat; --details adds exclusion IDs
 rem
 rem This .cmd file keeps Windows usage short and delegates real logic to
 rem run.ps1, where Docker legacy builder env vars are set automatically.

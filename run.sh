@@ -63,7 +63,8 @@ Telegram (needs TELEGRAM_API_ID/HASH in .env):
   preview [args]   Scan + build a digest without publishing: preview --channel <id>
   ai-check         Check OPENAI_API_KEY and model access (no paid call)
   reconcile [args] Check uncertain sends, resume series: reconcile --channel <id>
-  run-now [args]   Scan + AI + PUBLISH since last publication: run-now --channel <id>
+  run-now [args]   PUBLISH the latest completed schedule interval: run-now --channel <id>
+  run-window [args] PUBLISH --channel <id> --from <ISO> --to <ISO> [--ignore-published]
   worker           Run the scheduler worker in the foreground
   status           Channel state, recent runs, heartbeat
 EOF
@@ -76,7 +77,7 @@ case "$command" in
   help) show_help ;;
   start) docker compose up -d db ;;
   stop) docker compose stop db ;;
-  ps | status) docker compose ps ;;
+  ps) docker compose ps ;;
   logs)
     if [ "$#" -gt 0 ]; then
       docker compose logs -f --tail=120 "$@"
@@ -116,8 +117,9 @@ case "$command" in
   ai-check) app_no_db digest ai-check --config "$(config_path)" ;;
   reconcile) app digest reconcile --config "$(config_path)" "$@" ;;
   run-now) app digest run-now --config "$(config_path)" "$@" ;;
+  run-window) app digest run-window --config "$(config_path)" "$@" ;;
   worker) app digest run --config "$(config_path)" ;;
-  status) app_no_db digest status --config "$(config_path)" ;;
+  status) app_no_db digest status --config "$(config_path)" "$@" ;;
   *)
     echo "Unknown command: $command" >&2
     show_help

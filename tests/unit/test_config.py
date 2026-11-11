@@ -74,7 +74,10 @@ class TestValidConfigs:
     def test_example_file_loads(self) -> None:
         loaded = load_config(EXAMPLE)
         assert [c.id for c in loaded.config.target_channels] == ["dnipro_news", "crypto"]
-        assert loaded.prompts["dnipro_news"].startswith("# Style guide")
+        assert (
+            loaded.prompts["dnipro_news"]
+            == (EXAMPLE.parent / "prompts/news-ua.md").read_bytes().decode("utf-8-sig").strip()
+        )
         assert loaded.prompts["crypto"]
 
     def test_source_order_preserved(self) -> None:

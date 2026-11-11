@@ -1,14 +1,13 @@
 # Експлуатаційний контракт
 
-Стан: проєктний runbook, 2026-11-11. Наведені CLI — **запланований інтерфейс**;
-виконуваного `digest`, Dockerfile та Compose у workspace поки немає.
-Реальні команди запуску доповнюються після відповідних етапів реалізації.
+Оновлено 2026-11-11. Telegram/AI/delivery CLI, Dockerfile і Compose реалізовані.
+Backup/restore, сайти та зовнішні alerts у цьому runbook лишаються планом.
 
 ## Дані для середовища
 
 Підготувати `config/config.json` (schema 4, `target_channels`): цільові канали,
-їхні Telegram-джерела й сайти, `scan_start_at`, розклади, промпти, budgets і чинні
-тарифи; account ID і pinned peer IDs. Окремий реєстр прав не потрібен (D-010).
+їхні Telegram-джерела, `scan_start_at`, розклади й промпти; account ID і pinned peer IDs.
+Сайти ще не читаються. Окремий реєстр прав не потрібен (D-010); budgets не застосовуються (D-026).
 Telegram API credentials і OpenAI key зберігаються у secret files, session — окремо.
 Коди входу/2FA пароль не залишаються в конфігурації або документації.
 
@@ -21,17 +20,17 @@ Production target: один Linux Docker host, один non-root worker, local s
 Окремі writable data/cache/state/session, read-only config, tmpfs для socket/temp,
 без зовнішнього admin port, privileged або Docker socket.
 
-Конкретне розгортання на VPS (спільний PostgreSQL, скрипти `deploy/`) — у
+Конкретне розгортання на VPS (власний PostgreSQL, скрипти `deploy/`) — у
 [deployment.md](deployment.md).
 
-## Перший запуск після реалізації
+## Перший запуск
 
 1. Локально `validate-config`; перевірити schema 4, clocks/timezone, permissions.
 2. Із зупиненим worker: `login` під спільним process lock; перевірити account ID.
-3. Запустити worker у preview mode; `doctor`, `dialogs`, `schedule --all`.
-4. `ai-check`; `--probe` — окремий явний синтетичний виклик у межах бюджету.
+3. До запуску worker перевірити `doctor`, `dialogs`, `schedule --all`.
+4. `ai-check` — реальний синтетичний виклик OpenAI, що споживає API-кредити.
 5. Перевірити ручний/плановий `preview`: всі події, хронологію, посилання на найраніший допис, поділ, entities,
-   відсутність insert/guards і cleanup. За потреби ручного publish використовувати `prepare`.
+   відсутність insert/guards і cleanup. `preview` не публікує; `run-now` публікує.
 6. У тестовому destination перевірити серію, receipts, N confirmed rows і cache cleanup.
 7. Виконати fault-injection/backup restore та стендовий прогін, заповнити звіт.
 8. Застосувати production config; після цього планові випуски надсилаються
@@ -42,20 +41,40 @@ Idle disconnect і очікування cutoff — нормальна робот
 
 ## Операції CLI
 
-Зберігаються інтерфейси v4 §22: validate-config, login, dialogs, doctor,
-schedule, schedule-diff, ai-check, status, preview, publish,
-reconcile, cache-status, cache-clean, reload-config, backup, healthcheck.
-Додається `prepare --channel ... --window-end ...`, що повертає ID збереженої серії.
-`migrate-config` не потрібен (D-021). Параметр `--profile` у командах v4 читати як
-`--channel <id цільового каналу>`; точні імена опцій фіксуються в CLI schema.
+Основні операції через `run.cmd` (Windows) або `run.sh` (Linux):
 
-`status` має показувати digest window, N, committed parts, першу unresolved
-частину, cutoff/TTL та блокування наступного випуску. `reconcile` перевіряє всі
-unresolved parts профілю; точний фільтр part key/формат JSON та exit codes
-визначаються CLI schema. Не додавати `--force`, що обходить guards.
+```text
+run.cmd validate
+run.cmd schedule
+run.cmd status --details
+run.cmd run-now --channel <id>
+run.cmd run-window --channel <id> --from <ISO-дата> --to <ISO-дата> --ignore-published
+run.cmd preview --channel <id> --window-end <ISO-дата>
+run.cmd reconcile --channel <id>
+run.cmd cache-status
+run.cmd cache-clean
+```
 
-Online-команди працюють через worker socket; login/offline-команди не відкривають
-одну session паралельно. Звичайний `preview` не є підготовкою до `publish`.
+`run-now` читає останній завершений інтервал schedule. За 08/15/21 запуск
+о 21:31 бере 15:00–21:00 (D-031); уже покритий інтервал не повторюється.
+Якщо worker працює, команда залишає йому запит у `/state/requests/`.
+Інші online-команди потребують вільного process lock. `preview`/`scan` мають
+окремий inspection-кеш; `--keep` не готує робочу публікацію.
+
+`run-window` також передає запит зайнятому worker; інакше виконується одразу.
+Це публікація довільного минулого періоду. `--ignore-published` явно дозволяє
+повторно включити новини, вимикаючи ID-фільтр та AI-пам'ять. Без прапорця при
+недоступній історії БД run зупиняється (`published_history_unavailable`).
+Команди для Windows/Linux/production — [manual-window.md](manual-window.md).
+
+`status` показує обидві межі в timezone каналу; `--details` додає per-source counts,
+ID виключених дописів та причини. `ps` показує контейнери Docker.
+`reconcile` запускає перевірку pending deliveries одразу, минаючи лише backoff.
+Guards, невизначений send і незмінність payload залишаються обов'язковими.
+Автоматичні delivery retries працюють і в idle (60–900 секунд), без нового scan/AI.
+
+`prepare`, окремий `publish`, socket, `reload-config` та `backup` з початкового
+ТЗ поки не реалізовані. Фактичний інтерфейс — `run.cmd help` і `digest --help`.
 
 ## Несправності
 
@@ -64,6 +83,12 @@ Online-команди працюють через worker socket; login/offline-�
 | `AUTH_REQUIRED` | Зупинити Telegram-операції; інтерактивно відновити сесію, без циклу кодів |
 | FloodWait | Поважати durable `pause_until`; restart не скидає очікування |
 | OpenAI quota/credits exhausted | Діагностика balance/limits; випуск не публікується, alert; без сліпого retry |
+| `ai_unprocessed` (лічильник) | Модель не врахувала допис і після окремого повтору; випуск вийшов без нього. ID — у `status --details`; за потреби `run-window` за той період (D-036) |
+| `ai_warning_numbers` / `_length` / `_attribution` | Пункт прийнято після однієї спроби виправлення із зауваженням; варто глянути пост |
+| `no_post_rights` / `auth_required` у run | Доставку зупиняє причина для власника: поверніть акаунту права адміністратора з публікацією в каналі або виконайте `digest login`. Worker повторює спроби кожні ≤15 хв і продовжить сам; до того `healthcheck` unhealthy, `status` — «ПОТРІБНА ДІЯ ВЛАСНИКА» (D-038) |
+| `ai_dedupe_failed` | Перевірка/злиття дублікатів не вдалися; опубліковано перевірені чернетки, можливий дубль |
+| `ai_incomplete_coverage` у старому run | Історичний код до D-036 |
+| `ai_off_topic` у старому run | Історичний результат старого промпту; новий `group-v4` цю причину забороняє |
 | AI rate limit / мережевий збій | Bounded backoff у межах бюджету/deadline; далі пропуск випуску й alert |
 | Частина `uncertain` | Reconcile pinned цільового каналу за часом публікації (D-017); не надсилати наступну частину |
 | Ack є, БД не записалася | Відновити confirmed row, не повторювати send |
@@ -76,6 +101,14 @@ Online-команди працюють через worker socket; login/offline-�
 Операторське закриття partial серії не видаляє доставлені повідомлення й не
 позначає unsent частини як published. Потрібен безконтентний аудит рішення.
 Зміна destination username на інший peer блокує відправку до перевірки identity.
+Команда операторського закриття та зовнішні alerts ще не реалізовані;
+зараз результати перевіряються через `status` і технічні логи.
+
+При деплої цього bugfix звірити ігнорований Git робочий `config/config.json`:
+старий `max_output_tokens=8192` і substring-фільтри `реклама`/`розіграш` можуть
+лишитися на сервері. Локально їх прибрано; код за замовчуванням не задає
+output cap і не відсіює новини за такими словами. Новий промпт зберігається в Git.
+Виправлення не перепубліковує старий випуск і не заповнює його пропуски автоматично.
 
 ## Backup і restore
 

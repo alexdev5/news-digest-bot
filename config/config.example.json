@@ -3,7 +3,7 @@
   "defaults": {
     "timezone": "Europe/Kyiv",
     "misfire_grace_seconds": 10800,
-    "ai": { "model": "gpt-6.1-terra", "reasoning_effort": "medium", "max_output_tokens": 8192 },
+    "ai": { "model": "gpt-6.1-terra", "reasoning_effort": "medium" },
     "publication": { "max_chars_per_message": 3500, "link_preview": false }
   },
   "target_channels": [
@@ -30,7 +30,7 @@
         }
       ],
       "ai": { "prompt_file": "prompts/news-ua.md" },
-      "filters": { "exclude_patterns": ["реклама", "розіграш"] },
+      "filters": { "exclude_patterns": [] },
       "format": { "header": "{date_long}" },
       "daily_budget_usd": 1.0
     },

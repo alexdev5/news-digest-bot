@@ -37,7 +37,7 @@ CreateFn = Callable[..., Awaitable[Any]]
 class AiSettings:
     model: str
     reasoning_effort: str
-    max_output_tokens: int
+    max_output_tokens: int | None
 
 
 class OpenAIProvider:
@@ -58,7 +58,11 @@ class OpenAIProvider:
                 instructions=instructions,
                 input=json.dumps(payload, ensure_ascii=False),
                 reasoning={"effort": self._settings.reasoning_effort},
-                max_output_tokens=self._settings.max_output_tokens,
+                **(
+                    {"max_output_tokens": self._settings.max_output_tokens}
+                    if self._settings.max_output_tokens is not None
+                    else {}
+                ),
                 store=False,
                 stream=False,
                 text={

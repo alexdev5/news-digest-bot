@@ -10,9 +10,10 @@ from __future__ import annotations
 from datetime import datetime, time
 from pathlib import Path
 from typing import Literal
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from newsdigest.scheduling import DailySlots, FixedInterval, Revision, Trigger
 from newsdigest.state.atomic import StateCorruptError, read_json_checked, write_json_atomic
@@ -105,12 +106,17 @@ class RunRecord(StateModel):
     created_at_utc: AwareDatetime
     updated_at_utc: AwareDatetime
     manual: bool = False
+    manual_request_id: str | None = None
+    ignore_published: bool = False
     error_code: str | None = None
     coverage: dict[str, SourceCoverage] = Field(default_factory=dict)
     excluded: dict[str, int] = Field(default_factory=dict)
     events: int | None = None
     parts: int | None = None
     ai_tokens: dict[str, int] = Field(default_factory=dict)
+    excluded_sources: list[dict[str, str | int]] = Field(default_factory=list)
+    delivery_attempts: int = 0
+    next_delivery_attempt_utc: AwareDatetime | None = None
 
 
 class ChannelState(StateModel):
@@ -135,7 +141,11 @@ class ChannelState(StateModel):
     def upsert_run(self, record: RunRecord) -> None:
         self.runs = [r for r in self.runs if r.digest_key != record.digest_key]
         self.runs.append(record)
-        self.runs = self.runs[-MAX_RUN_HISTORY:]
+        # Never lose recovery records simply because newer windows accumulated.
+        terminal = {"published", "failed", "cache_expired", "scanned"}
+        finished = [r for r in self.runs if r.status in terminal]
+        keep = {r.digest_key for r in finished[-MAX_RUN_HISTORY:]}
+        self.runs = [r for r in self.runs if r.status not in terminal or r.digest_key in keep]
 
     def find_run(self, digest_key: str) -> RunRecord | None:
         return next((r for r in self.runs if r.digest_key == digest_key), None)
@@ -208,6 +218,21 @@ class ManualRequest(StateModel):
 
     channel_id: str
     requested_at_utc: AwareDatetime
+    request_id: str = Field(default_factory=lambda: uuid4().hex, pattern=r"^[a-f0-9]{32}$")
+    window_start_utc: AwareDatetime | None = None
+    window_end_utc: AwareDatetime | None = None
+    ignore_published: bool = False
+
+    @model_validator(mode="after")
+    def valid_window(self) -> ManualRequest:
+        if (self.window_start_utc is None) != (self.window_end_utc is None):
+            raise ValueError("потрібні обидві межі ручного вікна")
+        if self.window_start_utc is not None and self.window_end_utc is not None:
+            if self.window_start_utc >= self.window_end_utc:
+                raise ValueError("початок вікна має бути раніше кінця")
+        elif self.ignore_published:
+            raise ValueError("ignore_published потребує явного вікна")
+        return self
 
 
 class Heartbeat(StateModel):
@@ -267,26 +292,32 @@ class StateStore:
 
     def request_manual_run(self, channel_id: str, at: datetime) -> Path:
         """Запис запиту окремим файлом: CLI не чіпає файли стану, якими володіє worker."""
-        path = self.requests_dir / f"manual-{channel_id}.json"
-        write_json_atomic(
-            path, ManualRequest(channel_id=channel_id, requested_at_utc=at).model_dump(mode="json")
-        )
+        return self.queue_manual_request(ManualRequest(channel_id=channel_id, requested_at_utc=at))
+
+    def queue_manual_request(self, request: ManualRequest) -> Path:
+        path = self.requests_dir / f"manual-{request.request_id}.json"
+        write_json_atomic(path, request.model_dump(mode="json"))
         return path
 
-    def take_manual_requests(self) -> list[ManualRequest]:
-        """Забирає (і видаляє) запити ручного прогону. Пошкоджені файли відкидаються."""
-        result: list[ManualRequest] = []
+    def pending_manual_requests(self) -> list[tuple[Path, ManualRequest]]:
+        """Read without consuming: a crash must not lose an explicit-window request."""
+        result: list[tuple[Path, ManualRequest]] = []
         if not self.requests_dir.exists():
             return result
         for path in sorted(self.requests_dir.glob("manual-*.json")):
             try:
                 data = read_json_checked(path)
                 if data is not None:
-                    result.append(ManualRequest.model_validate(data))
+                    result.append((path, ManualRequest.model_validate(data)))
             except (StateCorruptError, ValidationError):
-                pass
+                path.unlink(missing_ok=True)
+        return sorted(result, key=lambda item: (item[1].requested_at_utc, item[1].request_id))
+
+    def take_manual_requests(self) -> list[ManualRequest]:
+        requests = self.pending_manual_requests()
+        for path, _ in requests:
             path.unlink(missing_ok=True)
-        return result
+        return [request for _, request in requests]
 
     def load_heartbeat(self) -> Heartbeat | None:
         return self._load_optional("heartbeat.json", Heartbeat)

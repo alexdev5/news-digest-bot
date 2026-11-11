@@ -74,7 +74,8 @@ function Show-Help {
     Write-Host "  preview [args]   Scan + build a digest without publishing: preview --channel <id>"
     Write-Host "  ai-check         Check OPENAI_API_KEY and model access (no paid call)"
     Write-Host "  reconcile [args] Check uncertain sends, resume series: reconcile --channel <id>"
-    Write-Host "  run-now [args]   Scan + AI + PUBLISH since last publication: run-now --channel <id>"
+    Write-Host "  run-now [args]   PUBLISH the latest completed schedule interval: run-now --channel <id>"
+    Write-Host "  run-window [args] PUBLISH --channel <id> --from <ISO> --to <ISO> [--ignore-published]"
     Write-Host "  worker           Run the scheduler worker in the foreground"
     Write-Host "  status           Channel state, recent runs, heartbeat"
 }
@@ -94,9 +95,6 @@ switch ($Command) {
         exit $LASTEXITCODE
     }
     "ps" {
-        docker compose ps
-    }
-    "status" {
         docker compose ps
     }
     "logs" {
@@ -190,13 +188,17 @@ switch ($Command) {
         $ConfigPath = Get-ConfigPath
         Invoke-App digest run-now --config $ConfigPath @Rest
     }
+    "run-window" {
+        $ConfigPath = Get-ConfigPath
+        Invoke-App digest run-window --config $ConfigPath @Rest
+    }
     "worker" {
         $ConfigPath = Get-ConfigPath
         Invoke-App digest run --config $ConfigPath
     }
     "status" {
         $ConfigPath = Get-ConfigPath
-        Invoke-AppNoDb digest status --config $ConfigPath
+        Invoke-AppNoDb digest status --config $ConfigPath @Rest
     }
     default {
         Write-Host "Unknown command: $Command"

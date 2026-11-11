@@ -13,7 +13,7 @@ from newsdigest.scheduling import DailySlots, FixedInterval, Trigger
 class EffectiveAi:
     model: str
     reasoning_effort: ReasoningEffort
-    max_output_tokens: int
+    max_output_tokens: int | None
 
 
 @dataclass(frozen=True, slots=True)

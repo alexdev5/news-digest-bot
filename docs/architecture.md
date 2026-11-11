@@ -1,8 +1,9 @@
 # Архітектура й контракт доставки
 
 Робоча технічна деталізація [поточного ТЗ](specification.md), 2026-11-11.
-Модулі й моделі нижче потрібно реалізувати; наявність цього опису не означає,
-що в репозиторії вже є відповідні класи або міграції.
+Основні Telegram/AI/delivery модулі реалізовані. Опис також містить заплановані
+частини: сайти, повний backup/restore та операторські інструменти;
+фактична готовність — у [context.md](context.md).
 
 Термін «профіль» у цьому документі = **цільовий канал** (`target_channels[i]`),
 `profile_id` = його `id`. Рішення D-010–D-021 від 2026-11-11 — у [decisions.md](decisions.md).
@@ -23,9 +24,37 @@
 | published_repository | `ConfirmedPart` → транзакційний insert | Raw, drafts, failed runs або pending outbox |
 | service_state | Технічні JSON-файли під lock | Неопубліковані summaries, prompts або evidence |
 
-Один worker володіє Telegram-сесією. Online CLI делегує операції через Unix
-socket; offline login використовує той самий ексклюзивний process lock.
-Загальна черга Telegram-запитів і budget reservations спільні для профілів.
+Один worker володіє Telegram-сесією. `run-now` делегує запущеному worker запит
+через `/state/requests/`; решта online CLI використовує process lock і потребує
+вільної сесії. Unix socket поки не реалізовано. Telegram rate limits спільні
+для каналів; token/cost budget reservations не застосовуються (D-026).
+
+### Уточнення реалізації після bugfix
+
+- Робочий кеш — `/cache/runs`, `scan`/`preview` — `/cache/inspection/runs`.
+  Preview ніколи не перезаписує publication plan і random IDs робочої доставки.
+- Idle-цикл пробує pending delivery до нових вікон. Backoff 60–900 секунд
+  зберігається у `RunRecord`; він не запускає повторний scan або AI.
+- Відмова send лишає `prepared` guard і `partial` run; після невизначеного send —
+  звірка, після ack — тільки DB commit. Часткова серія блокує наступні.
+  Unresolved guards блокують відправку навіть за втрати run record; незавершені
+  runs не витісняються історією. Payload, manifest, N, random ID і destination незмінні.
+- Втрата кешу після send → hold. Якщо всі guards і відповідні рядки БД вже
+  committed, run завершується без повторного send навіть після cleanup/crash.
+- Heartbeat кожні 30 секунд працює й під час scan/AI/send. `status --details`
+  показує вікно в timezone каналу, per-source counts і виключені ID/причини без текстів.
+- Повний вхідний текст ділиться на пачки/фрагменти. Після кількох пачок або
+  повторів окремий запит повертає лише групи ID дублікатів; з оригіналів
+  переписуються тільки ці групи, решта чернеток не змінюється (D-036).
+  Необлікований після окремого повтору кандидат → `ai_unprocessed`, випуск виходить.
+- `group-v6`: окремі compact/detailed, bullets з refs та дослівна quote з provenance.
+  `ai/editorial.py` нормалізує форму сам; числа, довжина й атрибуція каналу — одна
+  спроба моделі, далі `ai_warning_*` (D-036). Подробиці — [editorial-format.md](editorial-format.md).
+  Renderer формує маркери/лапки, `items.short_summary` включає підподії для пам'яті
+  AI, `quote_source_refs` містить лише ID. Міграції та зміни старих планів не потрібні.
+- Retry отримує попередній невдалий пункт і всі його зауваження. AI trace
+  (payload/response/перевірки) та деталізація збою зберігаються лише в `run/ai/`
+  тимчасового кешу. CLI читає звідти пояснення; у `/state` лишається тільки код.
 
 ## Моделі й ідентичність
 
@@ -43,6 +72,13 @@ Config revision не робить те саме вікно новим випус
 `digest_key + part_index`, де index починається з 1. N та manifest hash
 перевіряються для всіх частин; вони не створюють нову ідентичність для повтору.
 Файлові шляхи будуються з безпечних hashes, не з channel title чи сирого timestamp.
+
+D-033: явний `run-window` має ключ `manual` + hash(канал, межі, request ID).
+Той самий запит після restart має той самий ключ; нова команда створює новий.
+Плановий coverage не враховує ці runs/рядки БД, але їхні source IDs і власні
+пункти лишаються в published history. Прапорець `ignore_published` і request ID
+зберігаються в безконтентному `RunRecord` для відновлення. Черга запитів має
+окремий файл на ID; worker видаляє його після виконання, а не перед ним.
 
 Snapshot відкритого вікна закріплюється на його початку; на cutoff виконується
 сканування вже визначеного контракту. При першій активації всередині вікна

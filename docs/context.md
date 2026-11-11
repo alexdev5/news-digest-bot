@@ -89,6 +89,16 @@ JSON-конфігу зі своїми джерелами, промптом і р
 
 ## Журнал
 
+### 2026-11-11 — перший CI і виправлення JSONB
+
+- Перший run GitHub Actions (коміт e7db3aa): job `check` упав на Tests, `deploy` пропущено.
+- Причина (відтворено локально в Docker): SQLAlchemy писав Python `None` у JSONB як
+  JSON `null`, а не SQL NULL → CHECK `items_is_array` ламав запис часткового відновлення.
+  Виправлено: `JSONB(none_as_null=True)` у `storage/models.py` (DDL міграції не змінився).
+- Перевірено локально: `.un.cmd check` — 108 passed, ruff/mypy чисті; `.un.cmd migrate`;
+  збірка runtime-образу й `digest --help` під UID 10001 з read-only FS.
+- Сервер: репозиторій у `/srv/news-digest`, ключ CI встановлено (forced command).
+
 ### 2026-11-11 — автодеплой як у crypto-bot
 
 - Власник: автодеплой потрібен одразу, за зразком crypto-bot.

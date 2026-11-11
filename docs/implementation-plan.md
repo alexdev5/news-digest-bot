@@ -28,8 +28,8 @@
 - `config/config.example.json`, `config/prompts/dnipro_news.md`.
 - Команди: `digest validate-config`, `digest schedule --channel <id> | --all`, `digest migrate`.
 - Docker: `Dockerfile`, `docker-compose.yml` (db + app), обгортки `run.cmd`/`run.ps1`/`run.sh`.
-- 87 тестів без БД проходять; 21 інтеграційний тест PostgreSQL написаний, але
-  **ще не запускався** (Docker Desktop був вимкнений). ruff і mypy без зауважень.
+- 108 тестів (87 без БД + 21 PostgreSQL) проходять у Docker (`.un.cmd check`);
+  ruff і mypy без зауважень. `digest migrate` і production-образ перевірені локально.
 
 Ще не зроблено в межах етапу 1: versioned schemas `/state` і part manifest,
 публічні enums статусів/помилок поза CLI exit codes, state-модель schedule revisions

@@ -38,6 +38,10 @@ class Base(DeclarativeBase):
 
 type JsonValue = Any
 
+# Python `None` має ставати SQL NULL («невідомо»), а не JSON-значенням `null`:
+# інакше CHECK-и на тип масиву й `IS NOT NULL` для complete-рядків хибно спрацьовують.
+JsonbOrNull = JSONB(none_as_null=True)
+
 _COMPLETE_METADATA = (
     "metadata_recovery = 'partial' OR ("
     "payload_hash IS NOT NULL AND random_id IS NOT NULL AND items IS NOT NULL "
@@ -66,19 +70,19 @@ class PublishedMessage(Base):
     confirmed_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     confirmation_method: Mapped[str] = mapped_column(Text)
     rendered_text: Mapped[str] = mapped_column(Text)
-    entities: Mapped[JsonValue | None] = mapped_column(JSONB)
+    entities: Mapped[JsonValue | None] = mapped_column(JsonbOrNull)
     payload_hash: Mapped[str | None] = mapped_column(Text)
     random_id: Mapped[int | None] = mapped_column(BigInteger)
     config_version: Mapped[str | None] = mapped_column(Text)
     schedule_revision: Mapped[int | None] = mapped_column(Integer)
-    source_order_snapshot: Mapped[JsonValue | None] = mapped_column(JSONB)
-    items: Mapped[JsonValue | None] = mapped_column(JSONB)
-    source_message_ids: Mapped[JsonValue | None] = mapped_column(JSONB)
-    coverage_summary: Mapped[JsonValue | None] = mapped_column(JSONB)
-    ai_usage_summary: Mapped[JsonValue | None] = mapped_column(JSONB)
+    source_order_snapshot: Mapped[JsonValue | None] = mapped_column(JsonbOrNull)
+    items: Mapped[JsonValue | None] = mapped_column(JsonbOrNull)
+    source_message_ids: Mapped[JsonValue | None] = mapped_column(JsonbOrNull)
+    coverage_summary: Mapped[JsonValue | None] = mapped_column(JsonbOrNull)
+    ai_usage_summary: Mapped[JsonValue | None] = mapped_column(JsonbOrNull)
     usage_scope: Mapped[str | None] = mapped_column(Text)
     metadata_recovery: Mapped[str] = mapped_column(Text)
-    own_edit_history: Mapped[JsonValue | None] = mapped_column(JSONB)
+    own_edit_history: Mapped[JsonValue | None] = mapped_column(JsonbOrNull)
 
     __table_args__ = (
         UniqueConstraint("part_key"),

@@ -21,7 +21,7 @@ from newsdigest.cache.run_cache import CacheManager
 from newsdigest.cli_common import DEFAULT_CONFIG, ConfigOption, ExitCode
 from newsdigest.config.effective import effective_channel
 from newsdigest.config.models import AppConfig, TargetChannel
-from newsdigest.scheduling import Revision, previous_boundary, window_for_boundary_rev
+from newsdigest.scheduling import Revision, Window, previous_boundary, window_for_boundary_rev
 from newsdigest.settings import (
     Paths,
     SettingsError,
@@ -75,6 +75,45 @@ def _select(config: AppConfig, channel_id: str) -> TargetChannel:
         return config.channel(channel_id)
     except KeyError:
         raise _exit(ExitCode.USAGE_ERROR, f"Невідомий цільовий канал: {channel_id}") from None
+
+
+def resolve_window(cfg: AppConfig, target: TargetChannel, window_end: str | None) -> Window:
+    """Вікно за межею `window_end` (ISO 8601) або остання минула межа розкладу."""
+    trigger = effective_channel(cfg, target).trigger
+    if window_end is None:
+        boundary = previous_boundary(trigger, utcnow())
+    else:
+        try:
+            boundary = datetime.fromisoformat(window_end)
+        except ValueError as exc:
+            raise _exit(ExitCode.USAGE_ERROR, "--window-end: потрібен ISO 8601") from exc
+        if boundary.tzinfo is None:
+            raise _exit(ExitCode.USAGE_ERROR, "--window-end має містити UTC offset")
+    try:
+        window = window_for_boundary_rev((Revision(trigger),), boundary, target.scan_start_at)
+    except ValueError as exc:
+        raise _exit(ExitCode.USAGE_ERROR, f"{exc}") from exc
+    if window is None:
+        raise _exit(ExitCode.USAGE_ERROR, "Межа раніше за scan_start_at — вікна немає.")
+    return window
+
+
+def load_published_keys(channel_id: str) -> set[tuple[object, ...]] | None:
+    """Уже використані джерельні дописи з БД (D-012); None, якщо БД недоступна."""
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from newsdigest.settings import database_settings_from_env
+    from newsdigest.storage.db import create_db_engine
+    from newsdigest.storage.published_repo import published_source_keys
+
+    try:
+        engine = create_db_engine(database_settings_from_env().url())
+        try:
+            return published_source_keys(engine, channel_id)
+        finally:
+            engine.dispose()
+    except (SettingsError, SQLAlchemyError):
+        return None
 
 
 def register(app: typer.Typer, load: Callable[[Path], AppConfig]) -> None:
@@ -214,23 +253,7 @@ def register(app: typer.Typer, load: Callable[[Path], AppConfig]) -> None:
         if not channel:
             raise _exit(ExitCode.USAGE_ERROR, "Вкажіть --channel <id>.")
         target = _select(cfg, channel)
-        trigger = effective_channel(cfg, target).trigger
-        revisions = (Revision(trigger),)
-        if window_end is None:
-            boundary = previous_boundary(trigger, utcnow())
-        else:
-            try:
-                boundary = datetime.fromisoformat(window_end)
-            except ValueError as exc:
-                raise _exit(ExitCode.USAGE_ERROR, "--window-end: потрібен ISO 8601") from exc
-            if boundary.tzinfo is None:
-                raise _exit(ExitCode.USAGE_ERROR, "--window-end має містити UTC offset")
-        try:
-            window = window_for_boundary_rev(revisions, boundary, target.scan_start_at)
-        except ValueError as exc:
-            raise _exit(ExitCode.USAGE_ERROR, f"{exc}") from exc
-        if window is None:
-            raise _exit(ExitCode.USAGE_ERROR, "Межа раніше за scan_start_at — вікна немає.")
+        window = resolve_window(cfg, target, window_end)
 
         paths, settings = telegram_env()
         store = StateStore(paths.state_dir)
@@ -266,6 +289,94 @@ def register(app: typer.Typer, load: Callable[[Path], AppConfig]) -> None:
             typer.echo(f"  кеш: {cache.run(outcome.digest_key).directory}")
         if outcome.status == "failed":
             raise typer.Exit(ExitCode.TELEGRAM_ERROR)
+
+    @app.command("preview")
+    def preview(
+        config: ConfigOption = DEFAULT_CONFIG,
+        channel: Annotated[str, typer.Option(help="id цільового каналу.")] = "",
+        window_end: Annotated[
+            str | None,
+            typer.Option(help="Межа вікна ISO 8601 з offset; за замовчуванням — остання минула."),
+        ] = None,
+        keep: Annotated[bool, typer.Option(help="Залишити кеш і plan.json до TTL.")] = False,
+    ) -> None:
+        """Сканування + збирання випуску без публікації: показує готові частини.
+
+        До етапу 4 (AI) кожен допис — окремий пункт із чорновим викладом
+        (перші речення); злиття за змістом і власний виклад робитиме модель.
+        """
+        from newsdigest.pipeline.build import build_digest
+        from newsdigest.pipeline.render import RenderError
+        from newsdigest.worker import RunExecutor
+
+        cfg = load(config)
+        if not channel:
+            raise _exit(ExitCode.USAGE_ERROR, "Вкажіть --channel <id>.")
+        target = _select(cfg, channel)
+        window = resolve_window(cfg, target, window_end)
+        eff = effective_channel(cfg, target)
+
+        paths, settings = telegram_env()
+        store = StateStore(paths.state_dir)
+        cache = CacheManager(paths.cache_dir)
+        lock = locked(store)
+        try:
+            executor = RunExecutor(
+                store, cache, gateway_factory(paths, settings), RateLimiter(store, utcnow), utcnow
+            )
+            outcome = asyncio.run(executor.scan(target, window))
+            run_cache = cache.run(outcome.digest_key)
+            published = load_published_keys(target.id)
+            try:
+                built = build_digest(
+                    target,
+                    window,
+                    eff.timezone,
+                    eff.max_chars_per_message,
+                    run_cache.read_messages(),
+                    runtime=store.load_runtime(),
+                    published=published,
+                )
+            except RenderError as exc:
+                raise _exit(ExitCode.USAGE_ERROR, f"Рендер: {exc.code}: {exc}") from exc
+            if keep:
+                built.plan.save(run_cache.directory)
+            else:
+                executor.discard(outcome)
+        finally:
+            lock.release()
+
+        tz = eff.timezone
+        typer.echo(
+            f"ПОПЕРЕДНІЙ ПЕРЕГЛЯД БЕЗ ШІ — {target.id}: "
+            f"{window.start_utc.astimezone(tz):%d.%m %H:%M} → "
+            f"{window.end_utc.astimezone(tz):%d.%m %H:%M} ({tz.key})"
+        )
+        if published is None:
+            typer.echo("  увага: БД недоступна — без перевірки вже опублікованого (D-012)")
+        if outcome.summary is not None:
+            statuses = ", ".join(f"{k}={v}" for k, v in outcome.summary.statuses.items())
+            typer.echo(f"  джерела: {statuses}")
+        typer.echo(
+            f"  кандидатів: {len(built.candidates.candidates)}, подій: {len(built.events)}, "
+            f"частин: {len(built.plan.parts)}"
+        )
+        for reason, count in sorted(built.candidates.excluded.items()):
+            typer.echo(f"  відкинуто ({reason}): {count}")
+        if not built.plan.parts:
+            typer.echo("Новин немає — публікації не було б (D-012).")
+        for part in built.plan.parts:
+            typer.echo("")
+            typer.echo(
+                f"===== повідомлення {part.index}/{part.count}, {len(part.text)} симв. ====="
+            )
+            typer.echo(part.text)
+            typer.echo("----- посилання -----")
+            for _offset, _length, url in part.entities:
+                typer.echo(f"  {url}")
+        if keep:
+            typer.echo("")
+            typer.echo(f"план: {cache.run(outcome.digest_key).directory / 'plan.json'}")
 
     @app.command("run")
     def run(config: ConfigOption = DEFAULT_CONFIG) -> None:

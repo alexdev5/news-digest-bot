@@ -27,11 +27,12 @@ JSON-конфігу зі своїми джерелами, промптом і р
 ## Поточний стан
 
 - Git: `main`, remote `origin` (GitHub). Push робить лише власник.
-- Етапи 1–2 (основне) готові: конфіг, розклади й ревізії, PostgreSQL, `/state`, кеш,
-  сканер Telegram (Telethon), worker `digest run`, CLI login/dialogs/doctor/scan/status.
-  157 тестів у Docker. Деталі — [implementation-plan.md](implementation-plan.md).
-- Немає: AI-обробки, рендеру, публікації, сайтів. Worker лише сканує в кеш.
-- Живої перевірки з Telegram ще не було: потрібні `api_id`/`api_hash` і `digest login`.
+- Етапи 1–2 (основне) і 3 (без AI) готові: конфіг, розклади, PostgreSQL, `/state`, кеш,
+  сканер Telegram, worker, `pipeline/` (кандидати, посилання D-015, порядок D-016,
+  рендер і поділ на частини, план), CLI preview. 180 тестів у Docker.
+  Деталі — [implementation-plan.md](implementation-plan.md).
+- Немає: AI-обробки (етап 4), публікації (етап 5), сайтів (2a). Worker лише сканує.
+- Telegram перевірено наживо (локально й на сервері): вхід, doctor, scan.
 - Кореневий `main.py` — шаблон PyCharm, не точка входу (не видаляли — файл власника).
 - Python 3.13 встановлено через uv (системний Python — 3.14). Команди — `uv run …`;
   якщо `uv` нема в PATH, `python -m uv run …`.
@@ -84,11 +85,20 @@ JSON-конфігу зі своїми джерелами, промптом і р
 
 ## Наступні кроки
 
-1. Жива перевірка етапу 2: власник отримує `api_id`/`api_hash`, `.\run.cmd login`,
-   `dialogs`, реальні канали в `config/config.json`, `.\run.cmd scan --channel …`.
-2. Далі — сайти (2a), pipeline/attribution/renderer (3), OpenAI (4), доставка (5).
+1. Власник дивиться `.\run.cmd preview --channel <id>` на реальних даних.
+2. Далі — OpenAI (етап 4: групування й виклад), доставка (5), сайти (2a).
 
 ## Журнал
+
+### 2026-11-11 — етап 3 (без AI)
+
+- `pipeline/`: candidates, events, render, plan, build; `storage/published_repo.py`;
+  CLI `digest preview`. Деталі — implementation-plan, «Результат етапу 3».
+- Вибір асистента: заголовок частини — `<header> · Частина i/N` (лише при N>1);
+  пункти розділені порожнім рядком; довжина — code points, entities — UTF-16;
+  точні копії — за нормалізованим текстом без URL; поріг підказки схожості 0.85.
+- Preview до етапу 4 показує чорновий виклад (перші речення) з позначкою «без ШІ»;
+  він не публікується (D-011).
 
 ### 2026-11-11 — перша жива перевірка Telegram
 

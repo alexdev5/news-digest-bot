@@ -161,3 +161,25 @@ def test_downgrade_and_upgrade_again(migrated_url: URL) -> None:
     finally:
         engine.dispose()
         upgrade(migrated_url)
+
+
+def test_published_source_keys(pg_engine: Engine) -> None:
+    from newsdigest.storage.published_repo import published_source_keys
+
+    put(
+        pg_engine,
+        row(
+            1,
+            source_message_ids=[
+                {"type": "telegram", "peer_id": -1002, "message_id": 7},
+                {"type": "site", "url": "https://example.com/a"},
+                {"type": "unknown"},
+            ],
+        ),
+    )
+    put(pg_engine, row(2, message_id=101, target_channel_id="other"))
+    assert published_source_keys(pg_engine, "news") == {
+        ("telegram", -1002, 7),
+        ("site", "https://example.com/a"),
+    }
+    assert published_source_keys(pg_engine, "missing") == set()

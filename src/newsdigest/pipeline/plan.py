@@ -38,7 +38,7 @@ class PlannedPart:
     index: int
     count: int
     text: str
-    entities: tuple[tuple[int, int, str], ...]
+    entities: tuple[dict[str, object], ...]
     payload_hash: str
     random_id: int
     items: tuple[dict[str, Any], ...]
@@ -69,6 +69,8 @@ def _item_metadata(number: int, event: Event) -> dict[str, Any]:
     return {
         "position": number,
         "event_id": event.event_id,
+        "title": event.title,
+        "emoji": event.emoji,
         "short_summary": event.summary,
         "is_update": event.is_update,
         "displayed_source_id": source.source_id,
@@ -103,7 +105,7 @@ def build_plan(
                 index=part.index,
                 count=part.count,
                 text=part.text,
-                entities=tuple((e.offset, e.length, e.url) for e in part.entities),
+                entities=tuple(e.as_json() for e in part.entities),
                 payload_hash=part.payload_hash,
                 random_id=rid,
                 items=tuple(_item_metadata(numbers[e.event_id], e) for e in part_events),

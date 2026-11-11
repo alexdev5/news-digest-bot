@@ -20,18 +20,21 @@ _WS = re.compile(r"\s+")
 
 @dataclass(frozen=True, slots=True)
 class Event:
-    """Одна новина випуску: власний короткий виклад і всі джерельні дописи-учасники."""
+    """Одна новина випуску (D-025): емодзі, короткий заголовок, суть у 1–2 реченнях
+    і всі джерельні дописи-учасники."""
 
     event_id: str
+    title: str
     summary: str
     participants: tuple[SourceRef, ...]
+    emoji: str = ""
     is_update: bool = False
 
     def __post_init__(self) -> None:
         if not self.participants:
             raise ValueError("подія без джерел")
-        if not self.summary.strip():
-            raise ValueError("подія без короткого викладу")
+        if not self.title.strip():
+            raise ValueError("подія без заголовка")
 
 
 def visible_source(event: Event) -> SourceRef:
@@ -59,13 +62,32 @@ def preview_summary(text: str, limit: int = MAX_PREVIEW_SUMMARY_CHARS) -> str:
     return summary
 
 
+MAX_PREVIEW_TITLE_CHARS = 90
+
+
+def preview_title_and_summary(text: str) -> tuple[str, str]:
+    """Чорнові заголовок (перше речення) і суть (наступні речення) без ШІ."""
+    first_paragraph = next((p for p in text.splitlines() if p.strip()), text)
+    sentences = _SENTENCE_END.split(_WS.sub(" ", first_paragraph).strip())
+    title = sentences[0]
+    if len(title) > MAX_PREVIEW_TITLE_CHARS:
+        title = title[: MAX_PREVIEW_TITLE_CHARS - 1].rsplit(" ", 1)[0].rstrip(",;:—- ") + "…"
+    rest = " ".join(sentences[1:])
+    return title, preview_summary(rest) if rest else ""
+
+
 def preview_events(candidates: Sequence[Candidate]) -> list[Event]:
-    """Кожен кандидат — окрема подія з чорновим викладом (до AI-групування)."""
-    return [
-        Event(
-            event_id=c.candidate_id,
-            summary=preview_summary(c.text),
-            participants=c.refs,
+    """Кожен кандидат — окрема подія з чорновим текстом (до AI-групування, етап 4)."""
+    events: list[Event] = []
+    for candidate in candidates:
+        title, summary = preview_title_and_summary(candidate.text)
+        events.append(
+            Event(
+                event_id=candidate.candidate_id,
+                title=title,
+                summary=summary,
+                participants=candidate.refs,
+                emoji="📰",
+            )
         )
-        for c in candidates
-    ]
+    return events

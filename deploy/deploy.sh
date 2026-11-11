@@ -20,12 +20,12 @@ for path in .env config/config.json secrets/postgres_password; do
 done
 
 # Compose вимагає наявності всіх файлів секретів сервісу app. Порожні заготовки
-# Telegram-секретів не дають деплою впасти; worker без значень не запускається.
-for name in telegram_api_id telegram_api_hash; do
+# секретів не дають деплою впасти; worker без Telegram-ключів не запускається.
+for name in telegram_api_id telegram_api_hash openai_api_key; do
   if [ ! -e "secrets/$name" ]; then
     : > "secrets/$name"
     chmod 0444 "secrets/$name"
-    echo ">> Створено порожній secrets/$name (заповніть значенням із my.telegram.org)"
+    echo ">> Створено порожній secrets/$name (заповніть: Telegram — my.telegram.org, OpenAI — platform.openai.com)"
   fi
 done
 

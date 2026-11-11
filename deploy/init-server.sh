@@ -46,7 +46,7 @@ fi
 chmod 0444 "$SECRET"
 
 # Telegram API (my.telegram.org): порожні заготовки, які треба заповнити вручну.
-for name in telegram_api_id telegram_api_hash; do
+for name in telegram_api_id telegram_api_hash openai_api_key; do
   if [ ! -e "secrets/$name" ]; then
     : > "secrets/$name"
     echo "   Створено порожній secrets/$name — впишіть значення з my.telegram.org"

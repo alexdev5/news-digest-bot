@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 from newsdigest.cache.run_cache import CacheManager, RunManifest
 from newsdigest.config.effective import effective_channel
 from newsdigest.config.models import AppConfig, TargetChannel
+from newsdigest.digest_runner import DigestBuilder, DigestOutcome
 from newsdigest.identity import digest_key
 from newsdigest.scheduling import (
     Revision,
@@ -132,7 +133,11 @@ class Worker:
         cache: CacheManager,
         executor: RunExecutor,
         clock: Clock,
+        builder: DigestBuilder | None = None,
+        prompts: dict[str, str] | None = None,
     ) -> None:
+        self._builder = builder
+        self._prompts = prompts or {}
         self._config = config
         self._store = store
         self._cache = cache
@@ -279,13 +284,19 @@ class Worker:
         log.info("run_started", extra={"channel": channel.id, "digest_key": key[:12]})
 
         self._active.add(key)
+        digest: DigestOutcome | None = None
         try:
             outcome = await self._executor.scan(channel, window)
+            if outcome.status == "scanned" and self._builder is not None:
+                eff = effective_channel(self._config, channel)
+                prompt = self._prompts.get(channel.id, "")
+                digest = await self._builder.build(eff, prompt, window, key)
         except Exception:
             # Непередбачена помилка не зупиняє worker: run позначається failed,
             # інші канали й наступні межі працюють далі.
             log.exception("run_internal_error", extra={"channel": channel.id})
             outcome = RunOutcome(key, window, "failed", None, "internal_error")
+            digest = None
         finally:
             self._active.discard(key)
 
@@ -295,6 +306,19 @@ class Worker:
         record.status = "scanned" if outcome.status == "scanned" else "failed"
         record.error_code = outcome.error_code
         record.updated_at_utc = self._clock()
+        if digest is not None:
+            if digest.status == "ready" and digest.built is not None:
+                record.status = "ready"
+                record.events = len(digest.built.events)
+                record.parts = len(digest.built.plan.parts)
+                record.ai_tokens = digest.built.tokens or {}
+                for reason, count in digest.built.candidates.excluded.items():
+                    record.excluded[reason] = record.excluded.get(reason, 0) + count
+            elif digest.status == "failed":
+                record.status = "failed"
+                record.error_code = digest.error_code
+            else:
+                record.error_code = record.error_code or digest.error_code
         if outcome.summary is not None:
             record.coverage = {
                 sid: SourceCoverage.model_validate({"status": status})
@@ -311,6 +335,9 @@ class Worker:
                 "status": record.status,
                 "error_code": outcome.error_code,
                 "in_window": outcome.summary.in_window if outcome.summary else 0,
+                "events": record.events,
+                "parts": record.parts,
+                "ai_tokens": record.ai_tokens,
                 "coverage": outcome.summary.statuses if outcome.summary else {},
             },
         )
@@ -321,7 +348,7 @@ class Worker:
             runtime = self._store.load_runtime()
             for state in runtime.channels.values():
                 for run in state.runs:
-                    if run.digest_key in removed and run.status == "scanned":
+                    if run.digest_key in removed and run.status in ("scanned", "ready"):
                         run.status = "cache_expired"
             self._store.save_runtime(runtime)
             log.info("cache_expired", extra={"runs": len(removed)})

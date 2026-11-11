@@ -13,7 +13,7 @@ from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 
@@ -298,15 +298,22 @@ def register(app: typer.Typer, load: Callable[[Path], AppConfig]) -> None:
             str | None,
             typer.Option(help="Межа вікна ISO 8601 з offset; за замовчуванням — остання минула."),
         ] = None,
+        no_ai: Annotated[
+            bool, typer.Option("--no-ai", help="Без OpenAI: чорновий текст, кожен допис окремо.")
+        ] = False,
         keep: Annotated[bool, typer.Option(help="Залишити кеш і plan.json до TTL.")] = False,
     ) -> None:
-        """Сканування + збирання випуску без публікації: показує готові частини.
+        """Сканування + збирання випуску без публікації: показує готові повідомлення.
 
-        До етапу 4 (AI) кожен допис — окремий пункт із чорновим викладом
-        (перші речення); злиття за змістом і власний виклад робитиме модель.
+        З `OPENAI_API_KEY` — справжній AI-прохід (платний запит); без ключа або з
+        `--no-ai` — чорновий текст без злиття (такий текст ніколи не публікується).
         """
-        from newsdigest.pipeline.build import build_digest
-        from newsdigest.pipeline.render import RenderError
+        from newsdigest.config import load_config
+        from newsdigest.digest_runner import (
+            DigestBuilder,
+            default_engine_factory,
+            default_provider_factory,
+        )
         from newsdigest.worker import RunExecutor
 
         cfg = load(config)
@@ -315,6 +322,8 @@ def register(app: typer.Typer, load: Callable[[Path], AppConfig]) -> None:
         target = _select(cfg, channel)
         window = resolve_window(cfg, target, window_end)
         eff = effective_channel(cfg, target)
+        prompt = load_config(config).prompts.get(target.id, "")
+        provider_factory = (lambda _settings: None) if no_ai else default_provider_factory()
 
         paths, settings = telegram_env()
         store = StateStore(paths.state_dir)
@@ -324,68 +333,107 @@ def register(app: typer.Typer, load: Callable[[Path], AppConfig]) -> None:
             executor = RunExecutor(
                 store, cache, gateway_factory(paths, settings), RateLimiter(store, utcnow), utcnow
             )
-            outcome = asyncio.run(executor.scan(target, window))
-            run_cache = cache.run(outcome.digest_key)
-            published = load_published_keys(target.id)
-            try:
-                built = build_digest(
-                    target,
-                    window,
-                    eff.timezone,
-                    eff.max_chars_per_message,
-                    run_cache.read_messages(),
-                    runtime=store.load_runtime(),
-                    published=published,
+            builder = DigestBuilder(
+                store, cache, provider_factory, default_engine_factory(), utcnow
+            )
+
+            async def scan_and_build() -> tuple[Any, Any]:
+                outcome = await executor.scan(target, window)
+                digest = await builder.build(
+                    eff, prompt, window, outcome.digest_key, allow_draft=True
                 )
-            except RenderError as exc:
-                raise _exit(ExitCode.USAGE_ERROR, f"Рендер: {exc.code}: {exc}") from exc
-            if keep:
-                built.plan.save(run_cache.directory)
-            else:
+                return outcome, digest
+
+            outcome, digest = asyncio.run(scan_and_build())
+            if not keep:
                 executor.discard(outcome)
         finally:
             lock.release()
 
         tz = eff.timezone
+        mode = f"AI {eff.ai.model}" if digest.used_ai else "БЕЗ ШІ (чорновий текст)"
         typer.echo(
-            f"ПОПЕРЕДНІЙ ПЕРЕГЛЯД БЕЗ ШІ — {target.id}: "
+            f"ПОПЕРЕДНІЙ ПЕРЕГЛЯД, {mode} — {target.id}: "
             f"{window.start_utc.astimezone(tz):%d.%m %H:%M} → "
             f"{window.end_utc.astimezone(tz):%d.%m %H:%M} ({tz.key})"
         )
-        if published is None:
-            typer.echo("  увага: БД недоступна — без перевірки вже опублікованого (D-012)")
         if outcome.summary is not None:
             statuses = ", ".join(f"{k}={v}" for k, v in outcome.summary.statuses.items())
             typer.echo(f"  джерела: {statuses}")
+        built = digest.built
+        if built is None:
+            raise _exit(ExitCode.TELEGRAM_ERROR, f"Випуск не зібрано: {digest.error_code}")
         typer.echo(
             f"  кандидатів: {len(built.candidates.candidates)}, подій: {len(built.events)}, "
             f"частин: {len(built.plan.parts)}"
         )
+        if built.tokens:
+            typer.echo(
+                f"  токени: вхід {built.tokens['input']}, вихід {built.tokens['output']}, "
+                f"запитів {built.tokens['requests']}"
+            )
         for reason, count in sorted(built.candidates.excluded.items()):
             typer.echo(f"  відкинуто ({reason}): {count}")
         if not built.plan.parts:
             typer.echo("Новин немає — публікації не було б (D-012).")
         for part in built.plan.parts:
             typer.echo("")
-            typer.echo(
-                f"===== повідомлення {part.index}/{part.count}, {len(part.text)} симв. ====="
-            )
+            typer.echo(f"===== {part.index}/{part.count}, {len(part.text)} симв. =====")
             typer.echo(part.text)
             typer.echo("----- посилання -----")
-            for _offset, _length, url in part.entities:
-                typer.echo(f"  {url}")
+            for entity in part.entities:
+                if entity.get("type") == "text_url":
+                    typer.echo(f"  {entity['url']}")
         if keep:
             typer.echo("")
             typer.echo(f"план: {cache.run(outcome.digest_key).directory / 'plan.json'}")
 
+    @app.command("ai-check")
+    def ai_check(config: ConfigOption = DEFAULT_CONFIG) -> None:
+        """Перевірка ключа OpenAI й доступу до моделі каналів (без платної генерації)."""
+        from newsdigest.ai.provider import openai_api_key
+
+        cfg = load(config)
+        key = openai_api_key()
+        if not key:
+            raise _exit(ExitCode.AI_ERROR, "Не задано OPENAI_API_KEY (або OPENAI_API_KEY_FILE).")
+        models = sorted(
+            {effective_channel(cfg, c).ai.model for c in cfg.target_channels if c.enabled}
+        )
+
+        async def check() -> list[str]:
+            from openai import AsyncOpenAI
+
+            client = AsyncOpenAI(api_key=key, timeout=30, max_retries=1)
+            problems: list[str] = []
+            for model in models:
+                try:
+                    await client.models.retrieve(model)
+                    typer.echo(f"[OK] модель {model} доступна")
+                except Exception as exc:
+                    typer.echo(f"[FAIL] модель {model}: {type(exc).__name__}")
+                    problems.append(model)
+            await client.close()
+            return problems
+
+        if asyncio.run(check()):
+            raise typer.Exit(ExitCode.AI_ERROR)
+
     @app.command("run")
     def run(config: ConfigOption = DEFAULT_CONFIG) -> None:
         """Worker: чекає планових меж і сканує вікна. Між межами джерела не читає."""
+        from newsdigest.config import load_config
+        from newsdigest.digest_runner import (
+            DigestBuilder,
+            default_engine_factory,
+            default_provider_factory,
+        )
         from newsdigest.logging_setup import setup_logging
         from newsdigest.worker import RunExecutor, Worker
 
         setup_logging()
         cfg = load(config)
+        prompts = load_config(config).prompts
         paths, settings = telegram_env()
         store = StateStore(paths.state_dir)
         cache = CacheManager(paths.cache_dir)
@@ -399,7 +447,11 @@ def register(app: typer.Typer, load: Callable[[Path], AppConfig]) -> None:
                     loop.add_signal_handler(sig, stop.set)
             limiter = RateLimiter(store, utcnow)
             executor = RunExecutor(store, cache, gateway_factory(paths, settings), limiter, utcnow)
-            await Worker(cfg, store, cache, executor, utcnow).run_forever(stop)
+            builder = DigestBuilder(
+                store, cache, default_provider_factory(), default_engine_factory(), utcnow
+            )
+            worker = Worker(cfg, store, cache, executor, utcnow, builder=builder, prompts=prompts)
+            await worker.run_forever(stop)
 
         try:
             asyncio.run(main())

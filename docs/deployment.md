@@ -91,7 +91,19 @@ Crypto-bot і його стек `postgres` не використовуються
 `… run --rm app digest scan --config /config/config.json --channel <id>` — теж
 лише при зупиненому worker.
 
-Секрет OpenAI додається в `secrets/` на етапі 4.
+## OpenAI (етап 4)
+
+Ключ — у `secrets/openai_api_key` (порожня заготовка створюється автоматично):
+
+```bash
+ printf '%s' 'sk-…' > /srv/news-digest/secrets/openai_api_key
+chmod 0444 /srv/news-digest/secrets/openai_api_key
+```
+
+Пробіл на початку першої команди не дає ключу потрапити в історію bash.
+Перевірка без платної генерації (worker можна не зупиняти):
+`… exec app digest ai-check --config /config/config.json`. Після перезапуску
+worker (`… restart app`) кожен run після сканування збирає план (`status` → `ready`).
 
 ## Автодеплой (GitHub Actions, як у crypto-bot)
 

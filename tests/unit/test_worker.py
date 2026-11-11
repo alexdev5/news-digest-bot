@@ -233,3 +233,80 @@ async def test_unexpected_error_marks_run_failed_and_worker_continues(tmp_path: 
     await h.worker.tick()
     run = h.runs()[0]
     assert (run.status, run.error_code) == ("failed", "internal_error")
+
+
+def ai_answer_all(create_calls: list[dict[str, Any]]):  # type: ignore[no-untyped-def]
+    import json as _json
+    from types import SimpleNamespace
+
+    async def create(**kwargs: Any) -> Any:
+        create_calls.append(kwargs)
+        candidates = _json.loads(kwargs["input"])["candidates"]
+        data = {
+            "events": [
+                {
+                    "candidate_ids": [c["id"]],
+                    "emoji": "📰",
+                    "title": c["text"][:60],
+                    "summary": "",
+                    "is_update": False,
+                }
+                for i, c in enumerate(candidates)
+            ],
+            "excluded": [],
+        }
+        return SimpleNamespace(
+            status="completed",
+            model="gpt-5.6-sol",
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    content=[SimpleNamespace(type="output_text", text=_json.dumps(data))],
+                )
+            ],
+            usage=SimpleNamespace(input_tokens=10, output_tokens=5),
+        )
+
+    return create
+
+
+def with_builder(h: Harness, provider: bool) -> None:
+    from newsdigest.ai.provider import OpenAIProvider
+    from newsdigest.digest_runner import DigestBuilder
+
+    calls: list[dict[str, Any]] = []
+    h.ai_calls = calls  # type: ignore[attr-defined]
+    factory_ai = (
+        (lambda s: OpenAIProvider(ai_answer_all(calls), s)) if provider else (lambda s: None)
+    )
+    builder = DigestBuilder(h.store, h.cache, factory_ai, lambda: None, h.clock)
+    limiter = RateLimiter(h.store, h.clock, h.clock.sleep, min_gap_seconds=0)
+    executor = RunExecutor(h.store, h.cache, factory(h.gateway), limiter, h.clock)
+    h.worker = Worker(config(), h.store, h.cache, executor, h.clock, builder=builder)
+
+
+async def test_ai_builds_ready_plan(tmp_path: Path) -> None:
+    h = Harness(tmp_path, kyiv(2026, 11, 10, 12))
+    with_builder(h, provider=True)
+    h.worker.initialize()
+    h.clock.now = kyiv(2026, 11, 10, 21, 1)
+    await h.worker.tick()
+    run = h.runs()[0]
+    assert run.status == "ready"
+    assert run.events and run.events > 0 and run.parts and run.parts >= 1
+    assert run.ai_tokens["requests"] == len(h.ai_calls)  # type: ignore[attr-defined]
+    plan = json.loads(
+        (h.cache.run(run.digest_key).directory / "plan.json").read_text(encoding="utf-8")
+    )["data"]
+    assert plan["parts"][0]["text"].startswith("Новини · 10.11 21:00")
+
+
+async def test_without_ai_key_no_plan_d011(tmp_path: Path) -> None:
+    h = Harness(tmp_path, kyiv(2026, 11, 10, 12))
+    with_builder(h, provider=False)
+    h.worker.initialize()
+    h.clock.now = kyiv(2026, 11, 10, 21, 1)
+    await h.worker.tick()
+    run = h.runs()[0]
+    assert (run.status, run.error_code) == ("scanned", "ai_not_configured")
+    assert not (h.cache.run(run.digest_key).directory / "plan.json").exists()

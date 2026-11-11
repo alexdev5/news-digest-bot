@@ -59,8 +59,14 @@ def ref(source: str, minutes: int, message_id: int = 1) -> SourceRef:
     )
 
 
-def event(event_id: str, *refs: SourceRef, summary: str = "Подія сталася.") -> Event:
-    return Event(event_id=event_id, summary=summary, participants=refs)
+def event(
+    event_id: str,
+    *refs: SourceRef,
+    summary: str = "Подія сталася.",
+    title: str = "Подія",
+    emoji: str = "",
+) -> Event:
+    return Event(event_id=event_id, title=title, summary=summary, participants=refs, emoji=emoji)
 
 
 HEADER = Header("{name} · {date} {time}", "Новини", START, END, KYIV)
@@ -143,35 +149,64 @@ class TestEvents:
         assert preview_summary(long).endswith("…")
 
 
+def fragment(text: str, offset: int, length: int) -> str:
+    encoded = text.encode("utf-16-le")
+    return encoded[offset * 2 : (offset + length) * 2].decode("utf-16-le")
+
+
 class TestRender:
-    def test_single_part_format_and_entities(self) -> None:
+    def test_item_format_d025(self) -> None:
         events = [
-            event("a", ref("alpha", 1), summary="Перша подія."),
-            event("b", ref("beta", 2), summary="Друга подія 🇺🇦 з емодзі."),
+            event(
+                "a",
+                ref("alpha", 1),
+                title="Відновили світло",
+                summary="Повернули у три громади.",
+                emoji="⚡",
+            ),
+            event("b", ref("beta", 2), title="Без викладу", summary=""),
         ]
         (part,) = render_series(events, HEADER, 3500)
         assert part.text == (
-            "Новини · 11.11 15:00\n\n1. Перша подія. — Альфа\n\n2. Друга подія 🇺🇦 з емодзі. — Бета"
+            "Новини · 11.11 15:00\n\n"
+            "1. ⚡ Відновили світло\nПовернули у три громади. — Альфа\n\n"
+            "2. Без викладу — Бета"
         )
-        for entity, label in zip(part.entities, ["Альфа", "Бета"], strict=True):
-            encoded = part.text.encode("utf-16-le")
-            fragment = encoded[entity.offset * 2 : (entity.offset + entity.length) * 2]
-            assert fragment.decode("utf-16-le") == label
-        assert part.entities[1].url == "https://t.me/beta/1"
+        kinds = [(e.kind, fragment(part.text, e.offset, e.length)) for e in part.entities]
+        assert kinds == [
+            ("bold", "Новини · 11.11 15:00"),
+            ("bold", "Відновили світло"),
+            ("text_url", "Альфа"),
+            ("bold", "Без викладу"),
+            ("text_url", "Бета"),
+        ]
+        assert part.links == ["https://t.me/alpha/1", "https://t.me/beta/1"]
+
+    def test_emoji_offsets_utf16_m06(self) -> None:
+        e = event("a", ref("alpha", 1), title="Прапор 🇺🇦 і 👨‍👩‍👧", summary="Текст 🇺🇦.", emoji="🇺🇦")
+        (part,) = render_series([e], HEADER, 3500)
+        bold = [x for x in part.entities if x.kind == "bold"][1]
+        link = next(x for x in part.entities if x.kind == "text_url")
+        assert fragment(part.text, bold.offset, bold.length) == "Прапор 🇺🇦 і 👨‍👩‍👧"
+        assert fragment(part.text, link.offset, link.length) == "Альфа"
 
     def test_update_prefix_and_label_cleanup(self) -> None:
         r = SourceRef(
             "alpha", "telegram", -1, 1, "https://t.me/a/1", START, "Канал\nз переносом", 0
         )
-        (part,) = render_series([Event("u", "Ціна змінилась.", (r,), is_update=True)], HEADER, 3500)
-        assert "1. Оновлення: Ціна змінилась. — Канал з переносом" in part.text
+        (part,) = render_series(
+            [Event("u", "Ціна змінилась", "Деталі.", (r,), emoji="💧", is_update=True)],
+            HEADER,
+            3500,
+        )
+        assert "1. 💧 Оновлення: Ціна змінилась\nДеталі. — Канал з переносом" in part.text
 
     def test_empty_digest_has_no_parts(self) -> None:
         assert render_series([], HEADER, 3500) == []
 
     def test_split_between_whole_items_m03_m04_m07(self) -> None:
         events = [
-            event(f"e{i}", ref("alpha", i, i), summary=f"Подія номер {i}. " + "x" * 80)
+            event(f"e{i}", ref("alpha", i, i), title=f"Подія {i}", summary="x" * 80)
             for i in range(30)
         ]
         parts = render_series(events, HEADER, 600)
@@ -181,7 +216,7 @@ class TestRender:
         assert all(f"Частина {p.index}/{len(parts)}" in p.text.splitlines()[0] for p in parts)
         placed = [eid for p in parts for eid in p.event_ids]
         assert placed == [e.event_id for e in events]
-        numbers = [line.split(".")[0] for p in parts for line in p.text.split("\n\n")[1:]]
+        numbers = [block.split(".")[0] for p in parts for block in p.text.split("\n\n")[1:]]
         assert numbers == [str(i) for i in range(1, 31)]
 
     def test_part_count_stable_across_9_to_10_m05(self) -> None:
@@ -205,7 +240,7 @@ class TestRender:
 class TestPlan:
     def test_plan_ids_hashes_and_metadata(self) -> None:
         events = [
-            event("a", ref("alpha", 1), ref("beta", 3, 7)),
+            event("a", ref("alpha", 1), ref("beta", 3, 7), title="Перша", emoji="⚡"),
             event("b", ref("gamma", 2)),
         ]
         parts = render_series(events, HEADER, 3500)
@@ -219,7 +254,9 @@ class TestPlan:
         assert part.payload_hash == parts[0].payload_hash
         assert [i["position"] for i in part.items] == [1, 2]
         assert part.items[0]["displayed_source_id"] == "alpha"
+        assert part.items[0]["title"] == "Перша" and part.items[0]["emoji"] == "⚡"
         assert {"type": "telegram", "peer_id": -1001, "message_id": 7} in part.source_message_ids
+        assert part.entities[0] == {"type": "bold", "offset": 0, "length": 20}
         assert len(plan.manifest_hash) == 64
         again = build_plan("d" * 64, "news", START, END, events, parts, random_id=lambda: 1)
         assert again.manifest_hash == plan.manifest_hash
@@ -261,19 +298,22 @@ def test_source_maps_use_config_name_then_id() -> None:
     assert labels == {"alpha": "Альфа", "beta": "beta"}
 
 
-def test_build_digest_end_to_end() -> None:
+async def test_build_digest_end_to_end_draft() -> None:
     messages = [
         msg("beta", 2, 30, "Друга новина. Деталі."),
         msg("alpha", 1, 10, "Перша новина."),
         msg("alpha", 3, 40, "Купуйте! Реклама."),
     ]
-    built = build_digest(channel(), WINDOW, KYIV, 3500, messages)
-    assert [e.summary for e in built.events] == ["Перша новина.", "Друга новина. Деталі."]
+    built = await build_digest(channel(), WINDOW, KYIV, 3500, messages)
+    assert [(e.title, e.summary) for e in built.events] == [
+        ("Перша новина.", ""),
+        ("Друга новина.", "Деталі."),
+    ]
     assert built.candidates.excluded == {"filtered": 1}
     (part,) = built.plan.parts
-    assert part.text.endswith("2. Друга новина. Деталі. — beta")
+    assert part.text.endswith("2. 📰 Друга новина.\nДеталі. — beta")
 
 
-def test_build_digest_without_news_has_no_parts() -> None:
-    built = build_digest(channel(), WINDOW, KYIV, 3500, [])
+async def test_build_digest_without_news_has_no_parts() -> None:
+    built = await build_digest(channel(), WINDOW, KYIV, 3500, [])
     assert built.plan.parts == ()

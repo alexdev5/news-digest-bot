@@ -22,7 +22,7 @@ MAX_RUN_HISTORY = 60
 MAX_SKIPPED_HISTORY = 60
 MAX_REVISIONS = 3
 
-RunStatus = Literal["materialized", "scanning", "scanned", "failed", "cache_expired"]
+RunStatus = Literal["materialized", "scanning", "scanned", "ready", "failed", "cache_expired"]
 CoverageStatus = Literal["pending", "complete", "partial", "unavailable", "excluded"]
 
 
@@ -96,6 +96,9 @@ class RunRecord(StateModel):
     error_code: str | None = None
     coverage: dict[str, SourceCoverage] = Field(default_factory=dict)
     excluded: dict[str, int] = Field(default_factory=dict)
+    events: int | None = None
+    parts: int | None = None
+    ai_tokens: dict[str, int] = Field(default_factory=dict)
 
 
 class ChannelState(StateModel):

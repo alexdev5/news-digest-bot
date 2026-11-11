@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, cast
 
 from sqlalchemy import Engine, Table, select
@@ -36,3 +37,32 @@ def published_source_keys(engine: Engine, channel_id: str) -> set[tuple[object, 
                 if key is not None:
                     keys.add(key)
     return keys
+
+
+def recent_items(
+    engine: Engine, channel_id: str, since: datetime, limit: int = 200
+) -> list[tuple[str, str, datetime]]:
+    """Власні опубліковані пункти каналу після `since`: (заголовок, виклад, час).
+
+    Міжвипускна пам'ять (v4 §11) — лише з уже підтверджених публікацій.
+    """
+    query = (
+        select(_TABLE.c["items"], _TABLE.c.published_at_utc)
+        .where(
+            _TABLE.c.target_channel_id == channel_id,
+            _TABLE.c.published_at_utc >= since,
+            _TABLE.c["items"].is_not(None),
+        )
+        .order_by(_TABLE.c.published_at_utc)
+    )
+    result: list[tuple[str, str, datetime]] = []
+    with engine.connect() as conn:
+        for items, published_at in conn.execute(query):
+            for item in items or ():
+                if not isinstance(item, dict):
+                    continue
+                title = str(item.get("title") or "").strip()
+                summary = str(item.get("short_summary") or "").strip()
+                if title or summary:
+                    result.append((title, summary, published_at))
+    return result[-limit:]

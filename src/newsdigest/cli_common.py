@@ -18,6 +18,7 @@ class ExitCode(IntEnum):
     LOCK_BUSY = 6
     STATE_ERROR = 7
     UNHEALTHY = 8
+    AI_ERROR = 9
 
 
 ConfigOption = Annotated[

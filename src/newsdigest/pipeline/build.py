@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
@@ -17,7 +17,21 @@ from newsdigest.scheduling import Window
 from newsdigest.state.store import RuntimeState
 from newsdigest.telegram_refs import parse_telegram_ref
 
-Grouper = Callable[[Sequence[Candidate]], list[Event]]
+Grouper = Callable[[Sequence[Candidate]], Awaitable["Grouped"]]
+
+
+@dataclass(frozen=True, slots=True)
+class Grouped:
+    """Результат групування: події + причини виключень (числа) + технічні metadata."""
+
+    events: list[Event]
+    excluded: dict[str, int]
+    tokens: dict[str, int] | None = None
+
+
+async def draft_grouper(candidates: Sequence[Candidate]) -> Grouped:
+    """Без ШІ: кожен кандидат — окрема подія з чорновим текстом (лише preview, D-011)."""
+    return Grouped(events=preview_events(candidates), excluded={})
 
 
 def source_maps(
@@ -45,9 +59,10 @@ class BuiltDigest:
     candidates: CandidateSet
     events: list[Event]
     plan: PublicationPlan
+    tokens: dict[str, int] | None = None
 
 
-def build_digest(
+async def build_digest(
     channel: TargetChannel,
     window: Window,
     timezone: ZoneInfo,
@@ -56,7 +71,7 @@ def build_digest(
     *,
     runtime: RuntimeState | None = None,
     published: set[tuple[object, ...]] | None = None,
-    grouper: Grouper = preview_events,
+    grouper: Grouper = draft_grouper,
 ) -> BuiltDigest:
     positions, labels = source_maps(channel, runtime)
     candidates = build_candidates(
@@ -66,7 +81,10 @@ def build_digest(
         exclude_patterns=channel.filters.exclude_patterns,
         published=published,
     )
-    events = ordered(grouper(candidates.candidates))
+    grouped = await grouper(candidates.candidates) if candidates.candidates else Grouped([], {})
+    for reason, count in grouped.excluded.items():
+        candidates.count(reason, count)
+    events = ordered(grouped.events)
     header = Header(
         template=channel.format.header,
         name=channel.name,
@@ -83,4 +101,4 @@ def build_digest(
         events,
         parts,
     )
-    return BuiltDigest(candidates=candidates, events=events, plan=plan)
+    return BuiltDigest(candidates=candidates, events=events, plan=plan, tokens=grouped.tokens)

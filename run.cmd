@@ -26,6 +26,7 @@ rem   dialogs    - list channels with IDs for the config
 rem   doctor     - check session, sources and posting rights
 rem   scan       - manual scan of one window: scan --channel <id>
 rem   preview    - scan + build a digest without publishing: preview --channel <id>
+rem   ai-check   - check OPENAI_API_KEY and model access (no paid call)
 rem   worker     - run the scheduler worker in the foreground
 rem   status     - channel state, recent runs, heartbeat
 rem

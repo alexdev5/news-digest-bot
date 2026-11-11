@@ -6,12 +6,15 @@ from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from newsdigest.telegram.types import (
     AccountInfo,
     DialogInfo,
+    OwnMessage,
     RawMessage,
     ResolvedPeer,
+    SentMessage,
     TelegramError,
 )
 
@@ -55,6 +58,14 @@ class FakeGateway:
     fail_after_pages: int | None = None
     flood_on_history: list[int] = field(default_factory=list)
     crash_on_account: bool = False
+    sent: list[tuple[int, str, int]] = field(default_factory=list)
+    """(peer_id, text, random_id) кожної ВДАЛОЇ відправки."""
+    send_errors: list[BaseException] = field(default_factory=list)
+    deliver_then_fail: bool = False
+    """Повідомлення доходить у канал, але відповідь «губиться» (обрив після send)."""
+    channel_posts: list[OwnMessage] = field(default_factory=list)
+    next_message_id: int = 1000
+    clock: Any = None
 
     async def account(self) -> AccountInfo:
         if self.crash_on_account:
@@ -86,6 +97,26 @@ class FakeGateway:
 
     async def dialogs(self) -> Sequence[DialogInfo]:
         return []
+
+    async def send_message(
+        self, peer_id: int, text: str, entities: Sequence[dict[str, object]], random_id: int
+    ) -> SentMessage:
+        if self.send_errors:
+            raise self.send_errors.pop(0)
+        self.next_message_id += 1
+        now = self.clock() if self.clock else datetime(2026, 1, 1, tzinfo=UTC)
+        post = OwnMessage(self.next_message_id, now)
+        self.channel_posts.append(post)
+        self.sent.append((peer_id, text, random_id))
+        if self.deliver_then_fail:
+            self.deliver_then_fail = False
+            raise ConnectionError("response lost")
+        return SentMessage(post.message_id, post.date_utc)
+
+    async def own_messages(
+        self, peer_id: int, since: datetime, until: datetime
+    ) -> Sequence[OwnMessage]:
+        return [m for m in self.channel_posts if since <= m.date_utc < until]
 
 
 def factory(gateway: FakeGateway):  # type: ignore[no-untyped-def]

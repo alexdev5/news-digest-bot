@@ -40,6 +40,8 @@ class DigestOutcome:
     error_code: str | None
     built: BuiltDigest | None
     used_ai: bool
+    detail: str | None = None
+    """Пояснення збою (зауваження до відповіді моделі тощо) — для CLI, не для логів."""
 
 
 class DigestBuilder:
@@ -102,10 +104,12 @@ class DigestBuilder:
             )
         except AiError as exc:
             log.warning("ai_failed", extra={"channel": channel.id, "error_code": exc.code})
-            return DigestOutcome("failed", f"ai_{exc.code}", None, used_ai=True)
+            return DigestOutcome("failed", f"ai_{exc.code}", None, used_ai=True, detail=str(exc))
         except RenderError as exc:
             log.warning("render_failed", extra={"channel": channel.id, "error_code": exc.code})
-            return DigestOutcome("failed", f"render_{exc.code}", None, used_ai=provider is not None)
+            return DigestOutcome(
+                "failed", f"render_{exc.code}", None, used_ai=provider is not None, detail=str(exc)
+            )
 
         built.plan.save(run_cache.directory)
         return DigestOutcome("ready", None, built, used_ai=provider is not None)

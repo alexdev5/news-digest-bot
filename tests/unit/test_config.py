@@ -50,7 +50,7 @@ class TestValidConfigs:
     def test_minimal(self) -> None:
         cfg = parse(base())
         eff = effective_channel(cfg, cfg.target_channels[0])
-        assert eff.ai.model == "gpt-5.6-sol"
+        assert eff.ai.model == "gpt-6.1-terra"
         assert eff.ai.reasoning_effort == "medium"
         assert eff.timezone.key == "Europe/Kyiv"
         assert isinstance(eff.trigger, DailySlots)

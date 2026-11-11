@@ -362,7 +362,8 @@ def register(app: typer.Typer, load: Callable[[Path], AppConfig]) -> None:
             typer.echo(f"  джерела: {statuses}")
         built = digest.built
         if built is None:
-            raise _exit(ExitCode.TELEGRAM_ERROR, f"Випуск не зібрано: {digest.error_code}")
+            detail = f"\n  {digest.detail}" if digest.detail else ""
+            raise _exit(ExitCode.TELEGRAM_ERROR, f"Випуск не зібрано: {digest.error_code}{detail}")
         typer.echo(
             f"  кандидатів: {len(built.candidates.candidates)}, подій: {len(built.events)}, "
             f"частин: {len(built.plan.parts)}"
@@ -419,10 +420,62 @@ def register(app: typer.Typer, load: Callable[[Path], AppConfig]) -> None:
         if asyncio.run(check()):
             raise typer.Exit(ExitCode.AI_ERROR)
 
+    @app.command("reconcile")
+    def reconcile(
+        config: ConfigOption = DEFAULT_CONFIG,
+        channel: Annotated[str, typer.Option(help="id цільового каналу.")] = "",
+    ) -> None:
+        """Звірити невизначені відправки й продовжити незавершені серії каналу.
+
+        Не сканує джерела й не генерує новий текст: лише збережені плани з кешу.
+        Worker має бути зупинений (process lock).
+        """
+        from newsdigest.delivery import Delivery, sql_part_store_factory
+        from newsdigest.digest_runner import default_engine_factory
+        from newsdigest.worker import RunExecutor, Worker
+
+        cfg = load(config)
+        if not channel:
+            raise _exit(ExitCode.USAGE_ERROR, "Вкажіть --channel <id>.")
+        target = _select(cfg, channel)
+        paths, settings = telegram_env()
+        store = StateStore(paths.state_dir)
+        cache = CacheManager(paths.cache_dir)
+        lock = locked(store)
+        try:
+            limiter = RateLimiter(store, utcnow)
+            factory = gateway_factory(paths, settings)
+            executor = RunExecutor(store, cache, factory, limiter, utcnow)
+            parts_factory = sql_part_store_factory(default_engine_factory())
+            delivery = Delivery(store, cache, factory, limiter, parts_factory, utcnow)
+            worker = Worker(cfg, store, cache, executor, utcnow, delivery=delivery)
+            if target.id not in store.load_runtime().channels:
+                raise _exit(ExitCode.USAGE_ERROR, "Канал ще не активований worker-ом.")
+            asyncio.run(worker.publish_pending(target, utcnow()))
+        finally:
+            lock.release()
+        state = store.load_runtime().channels[target.id]
+        for record in state.runs[-5:]:
+            typer.echo(
+                f"  {record.window_end_utc:%Y-%m-%d %H:%M}Z {record.status}"
+                + (f" {record.error_code}" if record.error_code else "")
+            )
+        unresolved = store.load_guards().unresolved(target.id)
+        if unresolved:
+            typer.echo(f"Невирішених частин: {len(unresolved)}")
+            for guard in unresolved:
+                typer.echo(
+                    f"  {guard.part_key[:12]}…:{guard.part_index}/{guard.part_count} {guard.phase}"
+                    + (f" {guard.error_code}" if guard.error_code else "")
+                )
+            raise typer.Exit(ExitCode.TELEGRAM_ERROR)
+        typer.echo("OK: невирішених відправок немає")
+
     @app.command("run")
     def run(config: ConfigOption = DEFAULT_CONFIG) -> None:
         """Worker: чекає планових меж і сканує вікна. Між межами джерела не читає."""
         from newsdigest.config import load_config
+        from newsdigest.delivery import Delivery, sql_part_store_factory
         from newsdigest.digest_runner import (
             DigestBuilder,
             default_engine_factory,
@@ -450,7 +503,24 @@ def register(app: typer.Typer, load: Callable[[Path], AppConfig]) -> None:
             builder = DigestBuilder(
                 store, cache, default_provider_factory(), default_engine_factory(), utcnow
             )
-            worker = Worker(cfg, store, cache, executor, utcnow, builder=builder, prompts=prompts)
+            delivery = Delivery(
+                store,
+                cache,
+                gateway_factory(paths, settings),
+                limiter,
+                sql_part_store_factory(default_engine_factory()),
+                utcnow,
+            )
+            worker = Worker(
+                cfg,
+                store,
+                cache,
+                executor,
+                utcnow,
+                builder=builder,
+                prompts=prompts,
+                delivery=delivery,
+            )
             await worker.run_forever(stop)
 
         try:
@@ -480,6 +550,9 @@ def register(app: typer.Typer, load: Callable[[Path], AppConfig]) -> None:
             typer.echo(f"worker heartbeat: {age} с тому ({heartbeat.phase})")
         else:
             typer.echo("worker heartbeat: немає")
+        unresolved = store.load_guards().unresolved()
+        if unresolved:
+            typer.echo(f"невирішених частин доставки: {len(unresolved)} (див. digest reconcile)")
         if limits.pause_until_utc and limits.pause_until_utc > now:
             typer.echo(f"FloodWait-пауза до {limits.pause_until_utc.isoformat()}")
         for channel in cfg.target_channels:

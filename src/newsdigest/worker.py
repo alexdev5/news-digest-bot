@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 from newsdigest.cache.run_cache import CacheManager, RunManifest
 from newsdigest.config.effective import effective_channel
 from newsdigest.config.models import AppConfig, TargetChannel
+from newsdigest.delivery import Delivery, PublishMeta, PublishResult
 from newsdigest.digest_runner import DigestBuilder, DigestOutcome
 from newsdigest.identity import digest_key
 from newsdigest.scheduling import (
@@ -47,6 +48,8 @@ Clock = Callable[[], datetime]
 GatewayFactory = Callable[[], AbstractAsyncContextManager[TelegramGateway]]
 
 MAX_IDLE_SECONDS = 30.0
+PUBLISHABLE = ("ready", "partial", "uncertain", "held")
+RUN_STATUSES = ("published", "partial", "uncertain", "held", "failed")
 DEFAULT_RUN_TIMEOUT_SECONDS = 600
 
 
@@ -135,7 +138,9 @@ class Worker:
         clock: Clock,
         builder: DigestBuilder | None = None,
         prompts: dict[str, str] | None = None,
+        delivery: Delivery | None = None,
     ) -> None:
+        self._delivery = delivery
         self._builder = builder
         self._prompts = prompts or {}
         self._config = config
@@ -306,6 +311,12 @@ class Worker:
         record.status = "scanned" if outcome.status == "scanned" else "failed"
         record.error_code = outcome.error_code
         record.updated_at_utc = self._clock()
+        if outcome.summary is not None:
+            record.coverage = {
+                sid: SourceCoverage.model_validate({"status": status})
+                for sid, status in outcome.summary.statuses.items()
+            }
+            record.excluded = dict(outcome.summary.excluded)
         if digest is not None:
             if digest.status == "ready" and digest.built is not None:
                 record.status = "ready"
@@ -319,12 +330,6 @@ class Worker:
                 record.error_code = digest.error_code
             else:
                 record.error_code = record.error_code or digest.error_code
-        if outcome.summary is not None:
-            record.coverage = {
-                sid: SourceCoverage.model_validate({"status": status})
-                for sid, status in outcome.summary.statuses.items()
-            }
-            record.excluded = outcome.summary.excluded
         state.upsert_run(record)
         self._store.save_runtime(runtime)
         log.info(
@@ -341,6 +346,67 @@ class Worker:
                 "coverage": outcome.summary.statuses if outcome.summary else {},
             },
         )
+        if record.status == "ready" and self._delivery is not None:
+            await self.publish_pending(channel, record.boundary_utc)
+
+    async def publish_pending(self, channel: TargetChannel, up_to: datetime) -> None:
+        """Публікує готові/незавершені runs каналу хронологічно; зупиняється на першому збої.
+
+        Новіший випуск не обганяє незавершену старішу серію (v4 §7.4, T71).
+        """
+        assert self._delivery is not None
+        state = self._store.load_runtime().channels[channel.id]
+        pending = sorted(
+            (r for r in state.runs if r.status in PUBLISHABLE and r.boundary_utc <= up_to),
+            key=lambda r: r.boundary_utc,
+        )
+        blocked = False
+        for run in pending:
+            if blocked:
+                self._update_run(channel.id, run.digest_key, status="held")
+                continue
+            meta = PublishMeta(
+                scheduled_at_utc=run.boundary_utc,
+                source_order=[s.id for s in channel.source_channels]
+                + [s.id for s in channel.source_sites],
+                coverage={k: v.status for k, v in run.coverage.items()},
+                ai_usage=dict(run.ai_tokens) or None,
+            )
+            self._active.add(run.digest_key)
+            try:
+                result = await self._delivery.deliver(channel, run.digest_key, meta)
+            except Exception:
+                log.exception("publish_internal_error", extra={"channel": channel.id})
+                result = PublishResult(status="partial", error_code="internal_error")
+            finally:
+                self._active.discard(run.digest_key)
+            status = result.status if result.status in RUN_STATUSES else "held"
+            self._update_run(
+                channel.id, run.digest_key, status=status, error_code=result.error_code
+            )
+            log.info(
+                "publish_finished",
+                extra={
+                    "channel": channel.id,
+                    "digest_key": run.digest_key[:12],
+                    "status": status,
+                    "error_code": result.error_code,
+                    "parts": f"{result.committed}/{result.total}",
+                },
+            )
+            if result.status != "published" and result.error_code != "plan_missing":
+                blocked = True
+
+    def _update_run(self, channel_id: str, digest_key: str, **changes: object) -> None:
+        runtime = self._store.load_runtime()
+        record = runtime.channels[channel_id].find_run(digest_key)
+        if record is None:
+            return
+        for name, value in changes.items():
+            setattr(record, name, value)
+        record.updated_at_utc = self._clock()
+        runtime.channels[channel_id].upsert_run(record)
+        self._store.save_runtime(runtime)
 
     def _cleanup_cache(self, now: datetime) -> None:
         removed = set(self._cache.cleanup_expired(now, self._active))
@@ -348,7 +414,7 @@ class Worker:
             runtime = self._store.load_runtime()
             for state in runtime.channels.values():
                 for run in state.runs:
-                    if run.digest_key in removed and run.status in ("scanned", "ready"):
+                    if run.digest_key in removed and run.status in ("scanned", "ready", "held"):
                         run.status = "cache_expired"
             self._store.save_runtime(runtime)
             log.info("cache_expired", extra={"runs": len(removed)})

@@ -257,7 +257,7 @@ def ai_answer_all(create_calls: list[dict[str, Any]]):  # type: ignore[no-untype
         }
         return SimpleNamespace(
             status="completed",
-            model="gpt-5.6-sol",
+            model="gpt-6.1-terra",
             output=[
                 SimpleNamespace(
                     type="message",
@@ -310,3 +310,54 @@ async def test_without_ai_key_no_plan_d011(tmp_path: Path) -> None:
     run = h.runs()[0]
     assert (run.status, run.error_code) == ("scanned", "ai_not_configured")
     assert not (h.cache.run(run.digest_key).directory / "plan.json").exists()
+
+
+def with_delivery(h: Harness) -> Any:
+    from newsdigest.ai.provider import OpenAIProvider
+    from newsdigest.delivery import Delivery
+    from newsdigest.digest_runner import DigestBuilder
+    from tests.unit.test_delivery import MemoryParts
+
+    target = channel_peer(-1004402354838, "my_digest")
+    h.gateway.peers["@my_digest"] = type(target)(target.peer_id, "Digest", "my_digest", True, True)
+    h.gateway.clock = h.clock
+    parts = MemoryParts()
+    calls: list[dict[str, Any]] = []
+    builder = DigestBuilder(
+        h.store, h.cache, lambda s: OpenAIProvider(ai_answer_all(calls), s), lambda: None, h.clock
+    )
+    limiter = RateLimiter(h.store, h.clock, h.clock.sleep, min_gap_seconds=0)
+    executor = RunExecutor(h.store, h.cache, factory(h.gateway), limiter, h.clock)
+    delivery = Delivery(h.store, h.cache, factory(h.gateway), limiter, lambda: parts, h.clock)
+    h.worker = Worker(
+        config(), h.store, h.cache, executor, h.clock, builder=builder, delivery=delivery
+    )
+    return parts
+
+
+async def test_ready_run_is_published_and_cache_cleaned(tmp_path: Path) -> None:
+    h = Harness(tmp_path, kyiv(2026, 11, 10, 12))
+    parts = with_delivery(h)
+    h.worker.initialize()
+    h.clock.now = kyiv(2026, 11, 10, 21, 1)
+    await h.worker.tick()
+    run = h.runs()[0]
+    assert run.status == "published"
+    assert len(parts.rows) == run.parts and len(h.gateway.sent) == run.parts
+    assert not h.cache.run(run.digest_key).directory.exists()
+    assert h.store.load_guards().unresolved() == []
+
+
+async def test_newer_run_held_behind_uncertain_t71(tmp_path: Path) -> None:
+    h = Harness(tmp_path, kyiv(2026, 11, 10, 12))
+    with_delivery(h)
+    h.worker.initialize()
+    h.clock.now = kyiv(2026, 11, 10, 21, 1)
+    h.gateway.send_errors.append(TimeoutError("lost"))
+    await h.worker.tick()
+    assert h.runs()[0].status == "uncertain"
+    h.clock.now = kyiv(2026, 11, 11, 8, 1)
+    await h.worker.tick()
+    statuses = [r.status for r in h.runs()]
+    assert statuses == ["uncertain", "held"]
+    assert h.gateway.sent == []

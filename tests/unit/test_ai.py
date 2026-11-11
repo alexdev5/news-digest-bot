@@ -16,7 +16,7 @@ from newsdigest.pipeline.events import visible_source
 
 KYIV = ZoneInfo("Europe/Kyiv")
 T0 = datetime(2026, 11, 11, 6, 0, tzinfo=UTC)
-SETTINGS = AiSettings("gpt-5.6-sol", "medium", 8192)
+SETTINGS = AiSettings("gpt-6.1-terra", "medium", 8192)
 CONTEXT = ChannelContext(
     topic="Новини Дніпра",
     channel_prompt="Пиши стисло.",
@@ -33,7 +33,7 @@ def response(data: Any = None, *, status: str = "completed", refusal: bool = Fal
     )
     return SimpleNamespace(
         status=status,
-        model="gpt-5.6-sol-2026",
+        model="gpt-6.1-terra-2026",
         incomplete_details=SimpleNamespace(reason="max_output_tokens"),
         output=[SimpleNamespace(type="message", content=content)],
         usage=SimpleNamespace(input_tokens=1000, output_tokens=200),
@@ -108,12 +108,12 @@ class TestProvider:
         )
         assert data == GOOD
         assert (usage.model, usage.input_tokens, usage.output_tokens) == (
-            "gpt-5.6-sol-2026",
+            "gpt-6.1-terra-2026",
             1000,
             200,
         )
         call = create.calls[0]
-        assert call["model"] == "gpt-5.6-sol"
+        assert call["model"] == "gpt-6.1-terra"
         assert call["store"] is False and call["stream"] is False
         assert call["reasoning"] == {"effort": "medium"}
         assert call["text"]["format"]["strict"] is True
@@ -205,7 +205,8 @@ class TestGrouping:
     async def test_still_missing_is_counted_not_lost(self) -> None:
         partial = json.loads(json.dumps(GOOD))
         partial["events"] = partial["events"][:1]
-        create = FakeCreate(partial, {"events": [], "excluded": []})
+        empty: dict[str, Any] = {"events": [], "excluded": []}
+        create = FakeCreate(partial, empty, empty)
         result = await group_with_ai(CANDIDATES, OpenAIProvider(create, SETTINGS), CONTEXT)
         assert result.unprocessed == ["c4"]
         assert result.excluded["ai_unprocessed"] == 1
@@ -223,7 +224,7 @@ class TestGrouping:
             ],
             "excluded": [],
         }
-        create = FakeCreate(bad, bad)
+        create = FakeCreate(bad, bad, bad)
         with pytest.raises(AiError) as info:
             await group_with_ai(CANDIDATES, OpenAIProvider(create, SETTINGS), CONTEXT)
         assert info.value.code == "invalid_answer"
@@ -233,3 +234,46 @@ class TestGrouping:
         bad["excluded"].append({"candidate_id": "c1", "reason": "ad"})
         problems, _ = validate(bad, CANDIDATES)
         assert any("двічі" in p for p in problems)
+
+
+async def test_one_bad_event_does_not_discard_others() -> None:
+    """Подія з вигаданим числом повторюється окремо; решта приймається одразу."""
+    bad = json.loads(json.dumps(GOOD))
+    bad["events"][1]["summary"] = "Призначили 12 додаткових рейсів."
+    fixed = {
+        "events": [
+            {
+                "candidate_ids": ["c4"],
+                "emoji": "🚆",
+                "title": "Додали потяги на вихідні",
+                "summary": "Призначили додаткові рейси.",
+                "is_update": False,
+            }
+        ],
+        "excluded": [],
+    }
+    create = FakeCreate(bad, fixed)
+    result = await group_with_ai(CANDIDATES, OpenAIProvider(create, SETTINGS), CONTEXT)
+    assert len(result.events) == 2
+    assert [c["id"] for c in create.payload(1)["candidates"]] == ["c4"]
+    assert "12" in " ".join(create.payload(1)["previous_answer_problems"])
+
+
+def test_date_parts_count_as_source_numbers() -> None:
+    candidates = [
+        Candidate("d1", "Засідання 11.11 о 15:30, 1 000 учасників.", (ref("alpha", 1, 0),))
+    ]
+    answer = {
+        "events": [
+            {
+                "candidate_ids": ["d1"],
+                "emoji": "🏛",
+                "title": "Засідання 11 листопада",
+                "summary": "Початок о 15:30, учасників 1000.",
+                "is_update": False,
+            }
+        ],
+        "excluded": [],
+    }
+    problems, covered = validate(answer, candidates)
+    assert problems == [] and covered == {"d1"}

@@ -63,6 +63,27 @@ class PublicationPlan:
         write_json_atomic(path, self.to_json())
         return path
 
+    @classmethod
+    def load(cls, directory: Path) -> PublicationPlan | None:
+        """План із кешу run або None, якщо його немає (кеш очищено/прострочено)."""
+        from newsdigest.state.atomic import read_json_checked
+
+        data = read_json_checked(directory / "plan.json")
+        if data is None:
+            return None
+        parts = tuple(
+            PlannedPart(
+                **{
+                    **part,
+                    "entities": tuple(part["entities"]),
+                    "items": tuple(part["items"]),
+                    "source_message_ids": tuple(part["source_message_ids"]),
+                }
+            )
+            for part in data["parts"]
+        )
+        return cls(**{**data, "parts": parts})
+
 
 def _item_metadata(number: int, event: Event) -> dict[str, Any]:
     source = visible_source(event)

@@ -22,8 +22,9 @@ NewsDigest — Python-сервіс у Docker для тематичних дай�
 Стан на 2026-11-11: етапи 1–4 (основне) — JSON-конфіг, розклади, PostgreSQL, `/state`,
 кеш, сканер Telegram, worker, `pipeline/` (кандидати, посилання, порядок, рендер D-025,
 план), `ai/` (OpenAI Responses, групування з перевірками), команди
-login/dialogs/doctor/scan/preview/ai-check/status. Публікація в Telegram (етап 5),
-сайти (2a) ще не реалізовані — не описуй їх як готові. Обмежень на токени/витрати
+login/dialogs/doctor/scan/preview/ai-check/reconcile/status, доставка серій (`delivery.py`,
+guards, confirmed-only insert, звірка). Сайти (2a) і backup/restore-звірка ще не
+реалізовані — не описуй їх як готові. Worker публікує в канал автоматично. Обмежень на токени/витрати
 OpenAI немає й не додавати без вказівки власника (D-026). Кореневий `main.py` — шаблон PyCharm,
 не точка входу. Підтримуй цю примітку актуальною.
 
@@ -71,7 +72,7 @@ OpenAI немає й не додавати без вказівки власни�
 - Технічні файли `/state` не містять новинних текстів. Вони зберігають розклад,
   delivery guards, budgets і rate limits. Кеш не включається в backup.
 - Пам'ять між випусками — тільки з уже опублікованих власних пунктів.
-- AI: OpenAI Responses API, `gpt-5.6-sol`, `reasoning.effort=medium`; цільовий канал
+- AI: OpenAI Responses API, `gpt-6.1-terra`, `reasoning.effort=medium`; цільовий канал
   може явно перевизначити модель. Не підміняй модель або провайдера мовчки.
   Rule-based заміни AI в MVP немає: AI-збій → випуск не виходить, alert (D-011).
 - Промпт цільового каналу доповнює системні інструкції, не скасовує structured

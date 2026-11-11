@@ -91,6 +91,21 @@ Crypto-bot і його стек `postgres` не використовуються
 `… run --rm app digest scan --config /config/config.json --channel <id>` — теж
 лише при зупиненому worker.
 
+## Публікація (етап 5)
+
+Коли worker запущено й задано ключ OpenAI, на кожній межі він: сканує → збирає
+випуск → **публікує в цільовий канал** → пише підтверджені частини в БД. Окремої
+команди «увімкнути публікацію» немає; `preview` ніколи не публікує.
+
+Якщо відповідь Telegram загубилась (`uncertain`), наступні частини й новіші випуски
+чекають. Звірка (worker треба зупинити):
+
+```bash
+docker compose -f docker-compose.prod.yml --profile worker stop app
+docker compose -f docker-compose.prod.yml --profile worker run --rm app digest reconcile --config /config/config.json --channel <id>
+docker compose -f docker-compose.prod.yml --profile worker up -d app
+```
+
 ## OpenAI (етап 4)
 
 Ключ — у `secrets/openai_api_key` (порожня заготовка створюється автоматично):

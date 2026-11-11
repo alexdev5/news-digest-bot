@@ -9,7 +9,7 @@
 ## Призначення
 
 Один звичайний Telegram-акаунт за розкладом читає налаштовані Telegram-канали,
-сервіс завантажує налаштовані сайти, модель `gpt-5.6-sol` групує й стисло
+сервіс завантажує налаштовані сайти, модель `gpt-6.1-terra` групує й стисло
 переказує всі унікальні новини, а сервіс публікує результат у цільовий канал.
 Кожен цільовий канал має свої джерела, промпт, розклад і правила. Новий канал
 додається новим елементом JSON-конфігу без правок коду.
@@ -179,7 +179,7 @@ PostgreSQL (D-022); схема змінюється тільки міграці�
 
 ## AI
 
-OpenAI Responses API, за замовчуванням `model=gpt-5.6-sol`,
+OpenAI Responses API, за замовчуванням `model=gpt-6.1-terra`,
 `reasoning.effort=medium`; цільовий канал може явно перевизначити модель/effort.
 Промпт цільового каналу (`prompt_file`/`prompt`) доповнює, а не замінює системні
 інструкції сервісу: формат structured output, обов'язкові refs, заборону вигадувати
@@ -211,7 +211,7 @@ OpenAI Responses API, за замовчуванням `model=gpt-5.6-sol`,
   "schema_version": 4,
   "defaults": {
     "timezone": "Europe/Kyiv",
-    "ai": { "model": "gpt-5.6-sol", "reasoning_effort": "medium", "max_output_tokens": 8192 },
+    "ai": { "model": "gpt-6.1-terra", "reasoning_effort": "medium", "max_output_tokens": 8192 },
     "publication": { "max_chars_per_message": 3500, "link_preview": false }
   },
   "target_channels": [

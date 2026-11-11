@@ -27,7 +27,7 @@ from newsdigest.ai.provider import AiError, AiUsage, OpenAIProvider
 from newsdigest.pipeline.candidates import Candidate
 from newsdigest.pipeline.events import Event
 
-MAX_ATTEMPTS = 2
+MAX_ATTEMPTS = 3
 MAX_BATCH_CHARS = 60_000
 MAX_CANDIDATE_CHARS = 4_000
 MAX_TITLE_CHARS = 120
@@ -52,6 +52,8 @@ class GroupingResult:
     unprocessed: list[str] = field(default_factory=list)
     usage: list[AiUsage] = field(default_factory=list)
     batches: int = 0
+    problems: list[str] = field(default_factory=list)
+    """Зауваження до відповіді моделі, що лишились після всіх спроб (без текстів новин)."""
 
     def count(self, reason: str, amount: int = 1) -> None:
         self.excluded[reason] = self.excluded.get(reason, 0) + amount
@@ -129,49 +131,96 @@ def build_payload(
     return payload
 
 
-def validate(data: dict[str, Any], batch: Sequence[Candidate]) -> tuple[list[str], set[str]]:
-    """Помилки відповіді й множина врахованих candidate_id."""
+def _source_numbers(text: str) -> set[str]:
+    """Числа джерела, включно з частинами дат/дробів: «11.11» дає 11.11 і 11."""
+    numbers = _numbers(text)
+    for number in list(numbers):
+        numbers.update(part for part in number.split(".") if part)
+    return numbers
+
+
+@dataclass(slots=True)
+class Review:
+    """Розбір відповіді моделі: загальні проблеми, придатні й непридатні події."""
+
+    global_problems: list[str] = field(default_factory=list)
+    good_events: list[dict[str, Any]] = field(default_factory=list)
+    bad_events: list[tuple[dict[str, Any], list[str]]] = field(default_factory=list)
+    excluded: list[dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def problems(self) -> list[str]:
+        return self.global_problems + [p for _, items in self.bad_events for p in items]
+
+    @property
+    def covered(self) -> set[str]:
+        ids = {cid for event in self.good_events for cid in event["candidate_ids"]}
+        return ids | {item["candidate_id"] for item in self.excluded}
+
+
+def review(data: dict[str, Any], batch: Sequence[Candidate]) -> Review:
+    """Перевіряє відповідь. Одна погана подія не скасовує решту придатних."""
     by_id = {c.candidate_id: c for c in batch}
-    seen: dict[str, str] = {}
-    problems: list[str] = []
+    result = Review()
     events = data.get("events")
     excluded = data.get("excluded")
     if not isinstance(events, list) or not isinstance(excluded, list):
-        return ["відповідь не відповідає схемі"], set()
+        result.global_problems.append("відповідь не відповідає схемі")
+        return result
 
-    def mark(cid: object, where: str) -> None:
-        if not isinstance(cid, str) or cid not in by_id:
-            problems.append(f"невідомий candidate_id {cid!r}")
-        elif cid in seen:
-            problems.append(f"кандидат {cid} ужито двічі ({seen[cid]} і {where})")
-        else:
-            seen[cid] = where
+    usage: dict[str, int] = {}
+    for event in events:
+        for cid in event.get("candidate_ids") or []:
+            usage[cid] = usage.get(cid, 0) + 1
+    for item in excluded:
+        cid = item.get("candidate_id")
+        usage[cid] = usage.get(cid, 0) + 1
+    unknown = sorted(str(c) for c in usage if c not in by_id)
+    twice = sorted(c for c, n in usage.items() if n > 1 and c in by_id)
+    if unknown:
+        result.global_problems.append(f"невідомі candidate_id: {', '.join(unknown)}")
+    if twice:
+        result.global_problems.append(f"кандидати ужито двічі: {', '.join(twice)}")
+    if result.global_problems:
+        return result
 
-    for index, event in enumerate(events):
-        ids = event.get("candidate_ids") or []
-        if not ids:
-            problems.append(f"подія {index}: немає candidate_ids")
-        for cid in ids:
-            mark(cid, f"подія {index}")
+    for event in events:
+        ids = [c for c in event.get("candidate_ids") or [] if c in by_id]
         title = str(event.get("title", "")).strip()
         summary = str(event.get("summary", "")).strip()
+        label = f"подія «{title[:40]}» ({', '.join(ids) or 'без candidate_ids'})"
+        issues: list[str] = []
+        if not ids:
+            issues.append(f"{label}: немає candidate_ids")
         if not title or len(title) > MAX_TITLE_CHARS:
-            problems.append(f"подія {index}: заголовок порожній або довший за {MAX_TITLE_CHARS}")
+            issues.append(f"{label}: заголовок порожній або довший за {MAX_TITLE_CHARS}")
         if len(summary) > MAX_SUMMARY_CHARS:
-            problems.append(f"подія {index}: summary довший за {MAX_SUMMARY_CHARS}")
+            issues.append(f"{label}: summary довший за {MAX_SUMMARY_CHARS}")
         if len(str(event.get("emoji", ""))) > MAX_EMOJI_CHARS:
-            problems.append(f"подія {index}: emoji має бути одним символом")
-        sources = " ".join(
-            _compact(by_id[c].text) for c in ids if isinstance(c, str) and c in by_id
-        )
-        missing = _numbers(_compact(f"{title} {summary}")) - _numbers(sources)
+            issues.append(f"{label}: emoji має бути одним символом")
+        sources = " ".join(_compact(by_id[c].text) for c in ids)
+        missing = _numbers(_compact(f"{title} {summary}")) - _source_numbers(sources)
         if missing:
-            problems.append(f"подія {index}: числа {sorted(missing)} відсутні в текстах джерел")
+            issues.append(
+                f"{label}: числа {sorted(missing)} відсутні в текстах джерел — "
+                "напиши їх точно як у джерелі або прибери"
+            )
+        if issues:
+            result.bad_events.append((event, issues))
+        else:
+            result.good_events.append(event)
     for item in excluded:
-        mark(item.get("candidate_id"), "excluded")
-        if item.get("reason") not in EXCLUSION_REASONS:
-            problems.append(f"невідома причина виключення {item.get('reason')!r}")
-    return problems, set(seen)
+        if item.get("reason") in EXCLUSION_REASONS:
+            result.excluded.append(item)
+        else:
+            result.global_problems.append(f"невідома причина виключення {item.get('reason')!r}")
+    return result
+
+
+def validate(data: dict[str, Any], batch: Sequence[Candidate]) -> tuple[list[str], set[str]]:
+    """Сумісний короткий вигляд `review`: усі проблеми й враховані candidate_id."""
+    checked = review(data, batch)
+    return checked.problems, checked.covered
 
 
 def _event(data: dict[str, Any], batch: Sequence[Candidate]) -> Event:
@@ -207,8 +256,10 @@ async def _group_batch(
     context: ChannelContext,
     result: GroupingResult,
 ) -> None:
+    """Приймає придатні події одразу; решту кандидатів повторно надсилає з поясненням."""
     pending = batch
     feedback: list[str] = []
+    accepted_any = False
     for _attempt in range(MAX_ATTEMPTS):
         data, usage = await provider.complete_json(
             SYSTEM_INSTRUCTIONS,
@@ -217,20 +268,32 @@ async def _group_batch(
             "digest_events",
         )
         result.usage.append(usage)
-        problems, covered = validate(data, pending)
-        if problems:
-            feedback = problems[:20]
+        checked = review(data, pending)
+        if checked.global_problems:
+            feedback = checked.global_problems[:20]
             continue
-        for event in data["events"]:
+        for event in checked.good_events:
             result.events.append(_event(event, pending))
-        for item in data["excluded"]:
+        for item in checked.excluded:
             result.count(f"ai_{item['reason']}")
+        accepted_any = accepted_any or bool(checked.good_events or checked.excluded)
+        covered = checked.covered
         pending = [c for c in pending if c.candidate_id not in covered]
         if not pending:
             return
-        feedback = [f"не враховано кандидатів: {', '.join(c.candidate_id for c in pending)}"]
-    if len(pending) == len(batch):
+        feedback = [p for _, issues in checked.bad_events for p in issues][:20]
+        missed = [c.candidate_id for c in pending if not _mentioned(c.candidate_id, checked)]
+        if missed:
+            feedback.append(f"не враховано кандидатів: {', '.join(missed)}")
+    result.problems.extend(feedback)
+    if not accepted_any:
         # Жодної придатної відповіді для пачки: AI-прохід не вдався, випуск не публікується.
         raise AiError("invalid_answer", "; ".join(feedback[:5]) or "немає валідної відповіді")
     result.unprocessed.extend(c.candidate_id for c in pending)
     result.count("ai_unprocessed", len(pending))
+
+
+def _mentioned(candidate_id: str, checked: Review) -> bool:
+    return any(
+        candidate_id in (event.get("candidate_ids") or []) for event, _ in checked.bad_events
+    )

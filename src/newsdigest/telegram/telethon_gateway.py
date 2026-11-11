@@ -19,10 +19,58 @@ from newsdigest.settings import Paths, TelegramSettings
 from newsdigest.telegram.types import (
     AccountInfo,
     DialogInfo,
+    OwnMessage,
     RawMessage,
     ResolvedPeer,
+    SendRejected,
+    SentMessage,
     TelegramError,
 )
+
+# Помилки, після яких повідомлення гарантовано НЕ надіслано (Telegram відхилив запит).
+_REJECTED_ERRORS = {
+    "ChatWriteForbiddenError",
+    "ChatAdminRequiredError",
+    "ChannelPrivateError",
+    "MessageTooLongError",
+    "MessageEmptyError",
+    "EntityBoundsInvalidError",
+    "EntitiesTooLongError",
+    "PeerIdInvalidError",
+    "UserBannedInChannelError",
+    "ChatRestrictedError",
+}
+
+
+def _entity(data: dict[str, object]) -> Any:
+    offset = int(data["offset"])  # type: ignore[call-overload]
+    length = int(data["length"])  # type: ignore[call-overload]
+    if data.get("type") == "bold":
+        return types.MessageEntityBold(offset=offset, length=length)
+    if data.get("type") == "text_url":
+        return types.MessageEntityTextUrl(offset=offset, length=length, url=str(data["url"]))
+    raise ValueError(f"невідомий тип entity: {data.get('type')!r}")
+
+
+def _sent_from_result(result: Any, random_id: int) -> SentMessage:
+    """Дістає ID і час повідомлення з відповіді messages.sendMessage."""
+    if isinstance(result, types.UpdateShortSentMessage):
+        date = _utc(result.date)
+        assert date is not None
+        return SentMessage(int(result.id), date)
+    message_id: int | None = None
+    updates = list(getattr(result, "updates", None) or ())
+    for update in updates:
+        if isinstance(update, types.UpdateMessageID) and update.random_id == random_id:
+            message_id = int(update.id)
+    for update in updates:
+        if isinstance(update, (types.UpdateNewChannelMessage, types.UpdateNewMessage)):
+            message = update.message
+            if message_id is None or int(message.id) == message_id:
+                date = _utc(message.date)
+                if date is not None:
+                    return SentMessage(int(message.id), date)
+    raise TelegramError("no_receipt", "у відповіді Telegram немає ID надісланого повідомлення")
 
 
 def build_client(
@@ -134,6 +182,44 @@ class TelethonGateway:
                     can_post=peer.can_post,
                 )
             )
+        return result
+
+    async def send_message(
+        self,
+        peer_id: int,
+        text: str,
+        entities: Sequence[dict[str, object]],
+        random_id: int,
+    ) -> SentMessage:
+        """Низькорівневий messages.sendMessage зі ЗБЕРЕЖЕНИМ random_id (v4 §14.2)."""
+        from telethon.tl.functions.messages import SendMessageRequest
+
+        peer = await self._client.get_input_entity(peer_id)
+        request = SendMessageRequest(
+            peer=peer,
+            message=text,
+            no_webpage=True,
+            random_id=random_id,
+            entities=[_entity(e) for e in entities],
+        )
+        try:
+            result = await self._client(request)
+        except Exception as exc:
+            if type(exc).__name__ in _REJECTED_ERRORS:
+                raise SendRejected("send_rejected", type(exc).__name__) from exc
+            raise
+        return _sent_from_result(result, random_id)
+
+    async def own_messages(
+        self, peer_id: int, since: datetime, until: datetime
+    ) -> Sequence[OwnMessage]:
+        """Власні (`out`) повідомлення каналу з датою в [since, until) — для звірки."""
+        messages = await self._client.get_messages(peer_id, limit=100, offset_date=until)
+        result: list[OwnMessage] = []
+        for message in messages:
+            date = _utc(message.date)
+            if date is not None and since <= date < until and getattr(message, "out", False):
+                result.append(OwnMessage(int(message.id), date))
         return result
 
 

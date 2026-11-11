@@ -21,6 +21,9 @@ Production target: один Linux Docker host, один non-root worker, local s
 Окремі writable data/cache/state/session, read-only config, tmpfs для socket/temp,
 без зовнішнього admin port, privileged або Docker socket.
 
+Конкретне розгортання на VPS (спільний PostgreSQL, скрипти `deploy/`) — у
+[deployment.md](deployment.md).
+
 ## Перший запуск після реалізації
 
 1. Локально `validate-config`; перевірити schema 4, clocks/timezone, permissions.
@@ -76,7 +79,7 @@ Online-команди працюють через worker socket; login/offline-�
 
 ## Backup і restore
 
-Backup: узгоджений SQLite backup API + мінімальний state + несекретні config snapshots,
+Backup: `pg_dump` контентної БД + мінімальний state + несекретні config snapshots,
 manifest/checksums; короткий lock без одночасних sends/state mutations.
 Кеш не копіюється. Session backup — окремо, зашифровано, якщо потрібний.
 

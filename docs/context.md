@@ -26,8 +26,14 @@ JSON-конфігу зі своїми джерелами, промптом і р
 
 ## Поточний стан
 
-- Реалізації немає: кореневий `main.py` — шаблон PyCharm. Немає `pyproject.toml`,
-  тестів, Dockerfile. Тека проєкту **не є git-репозиторієм**.
+- Git: `main`, remote `origin` (GitHub). Push робить лише власник.
+- Етап 1 частково готовий: `src/newsdigest` — JSON-конфіг (Pydantic), розклади й
+  вікна, `digest_key`/`part_key`, PostgreSQL-схема частин (Alembic); CLI `validate-config`,
+  `schedule`, `migrate`; 87 тестів без БД проходять, 21 тест PostgreSQL ще не запускався. Деталі — [implementation-plan.md](implementation-plan.md).
+- Немає: Telegram, OpenAI, сайтів, `/state`/кешу, доставки, Docker.
+- Кореневий `main.py` — шаблон PyCharm, не точка входу (не видаляли — файл власника).
+- Python 3.13 встановлено через uv (системний Python — 3.14). Команди — `uv run …`;
+  якщо `uv` нема в PATH, `python -m uv run …`.
 - Документація в `docs/` оновлена під рішення D-001–D-021 (2026-11-11).
 - Оригінал ТЗ `docs/specs/newsdigest-v4.txt` не змінювався й не змінюється.
 - Розробка ведеться на Windows власника (OSPanel); production-ціль — Linux Docker.
@@ -77,12 +83,87 @@ JSON-конфігу зі своїми джерелами, промптом і р
 
 ## Наступні кроки
 
-1. Вирішити з власником: `git init` + `.gitignore` (secrets, session, cache, data, state).
-2. Етап 1 з [implementation-plan.md](implementation-plan.md): `pyproject.toml` (uv),
-   Pydantic-моделі JSON-конфігу schema 4, `config/config.example.json`, чиста логіка
-   вікон/DST/`scan_start_at`, SQLite-схема частин із `source_message_ids`, офлайн-тести.
+1. Закрити хвости етапу 1 разом з етапом 2: atomic state storage, schemas `/state`
+   і part manifest, schedule revisions, process/per-channel locks, кеш із TTL.
+2. Далі — Telegram-адаптер (етап 2), сайти (2a), pipeline/attribution/renderer (3).
 
 ## Журнал
+
+### 2026-11-11 — автодеплой як у crypto-bot
+
+- Власник: автодеплой потрібен одразу, за зразком crypto-bot.
+- `.github/workflows/deploy.yml`: push/dispatch у `main` → job `check` (ruff, mypy,
+  pytest із сервісом PostgreSQL) → job `deploy` (SSH, у stdin лише SHA).
+- `deploy/ssh-entrypoint.sh` — forced command, ставиться в `/root/bin/news-digest-deploy-entrypoint`;
+  перевіряє SHA = origin/main, бере `deploy.sh` із цього коміту, `flock` від паралельних деплоїв.
+- `deploy/deploy.sh` тепер деплоїть точний `DEPLOY_SHA` (або origin/main вручну).
+- На сервері користувач — `root` (ключ «сервер → GitHub» створено в /root/.ssh,
+  аліас `github-news-digest`). Секрети GitHub: DEPLOY_HOST/USER/PORT/SSH_KEY — ще не задані.
+- **Не перевірено в дії:** workflow ще не запускався; тести PostgreSQL уперше пройдуть у CI.
+
+### 2026-11-11 — production: окремий проєкт news-digest (db + app), D-023
+
+- Власник: crypto-bot — **лише для читання** (і репозиторій, і його стеки на сервері).
+  Тому спільна база в контейнері crypto-bot відхилена.
+- Обрано: окремий Docker-проєкт `news-digest` (`name:` у compose) з двома контейнерами:
+  `db` (postgres:16-alpine, том `pgdata`, порт не публікується) і `app` (profile
+  `worker` до етапу 2). Пароль — compose secret `secrets/postgres_password`.
+- Скрипти: `deploy/init-server.sh` (каталоги, пароль, .env; sudo), `deploy/deploy.sh`
+  (pull → build → up db → backup → migrate → validate), `deploy/backup.sh`
+  (`/srv/news-digest-backups`). `deploy/create-database.sh` видалено.
+- **На сервері нічого не виконувалось**; перевірено `bash -n` і `docker compose config`.
+
+### 2026-11-11 — production на VPS зі спільним PostgreSQL (замінено пунктом вище)
+
+- На VPS (Hostinger, Docker Manager) є проєкти `crypto-bot` і `postgres`
+  (контейнер `postgres-postgres-1`). У crypto-bot: стек `/srv/postgres`, мережа
+  `ok_crypto`, хост `postgres`, суперкористувач із `/srv/postgres/.env`.
+- Рішення: окрема база й роль `news_digest` у тому ж контейнері, без нового контейнера БД.
+- Додано: `docker-compose.prod.yml` (runtime-образ, profile `worker` до етапу 2,
+  secret `postgres_password`), `.env.prod.example`, `deploy/create-database.sh`,
+  `deploy/deploy.sh`, `deploy/backup.sh`, `docs/deployment.md`.
+- **На сервері нічого не виконувалось.** Перевірено лише `bash -n` і
+  `docker compose -f docker-compose.prod.yml config`.
+- Для сервера потрібен окремий GitHub deploy key для `news-digest-bot`.
+
+### 2026-11-11 — PostgreSQL замість SQLite (D-022)
+
+- Власник: БД — PostgreSQL, як у crypto-bot. Узято той самий стек: `postgres:16-alpine`,
+  SQLAlchemy 2, psycopg 3 (`postgresql+psycopg`), Alembic.
+- SQLite-модуль видалено. Нове: `settings.py` (змінні `POSTGRES_*`, `POSTGRES_PASSWORD_FILE`),
+  `storage/models.py`, `storage/db.py`, міграції в `src/newsdigest/storage/migrations`
+  (ревізія `0001`), `alembic.ini` для ручних `alembic revision`, команда `digest migrate`.
+- Compose: сервіс `db` (порт хоста 5433, volume `postgres-data`), `app` залежить від нього.
+  Обгортки: `start`, `stop`, `ps`, `logs`, `psql`, `migrate`. `.env.example` додано.
+- Тести БД: `tests/integration`, тимчасова база на сесію; без PostgreSQL — skip,
+  у Docker (`NEWSDIGEST_REQUIRE_DB=1`) — fail. **На реальній БД ще не запускалися.**
+  Перевірено лише: `alembic upgrade head --sql` генерує очікуваний DDL.
+- `/state` і `/cache` лишилися файлами за документацією; перенос у БД не обговорювався.
+- **Перевірити після запуску Docker Desktop:** `.\run.cmd build`, `.\run.cmd check`.
+
+### 2026-11-11 — обгортка команд і Docker для розробки
+
+- Власник попросив запуск команд як у `C:\OSPanel\domains\crypto-bot`: `run.cmd` →
+  `run.ps1` (Windows, `DOCKER_BUILDKIT=0`), дзеркальний `run.sh` (Linux/macOS).
+- Додано `Dockerfile` (цілі `dev` і `runtime`, uv, Python 3.13), `docker-compose.yml`
+  (сервіс `app`, одноразові `docker compose run --rm app …`, код змонтований),
+  `.dockerignore`, `.gitattributes` (LF для sh/yml/Dockerfile).
+- Команди: build, shell, test, lint, fmt, typecheck, check, validate, schedule, digest.
+  `start/stop/logs/ps` додати разом із worker (етап 2).
+- **Збірку образу не перевірено**: Docker Desktop не був запущений. Перевірено лише
+  синтаксис скриптів, `docker compose config` і коди виходу `run.cmd`.
+- Питання власника про БД: спершу була SQLite з ТЗ v4; власник обрав PostgreSQL (D-022).
+- Під час коміту виставити `run.sh` виконуваним: `git update-index --chmod=+x run.sh`.
+
+### 2026-11-11 — етап 1 (каркас)
+
+- Власник створив репозиторій; закомічено оновлену документацію. У `.gitignore`
+  додано `/secrets/`, `/session/`, `/cache/`, `/data/`, `/state/`, `*.session`,
+  `/config/config.json`.
+- Створено каркас і модулі етапу 1 (див. «Поточний стан»). Вибір асистента:
+  `exclude_patterns` — підрядки, не regex; `misfire_grace_seconds` — у `defaults`
+  і `schedule`; selectors сайту: `item` (обов'язковий), `title`, `date`, `content`;
+  поля заголовка: `{name}`, `{date}`, `{time}`, `{period}`.
 
 ### 2026-11-11 — правила git
 

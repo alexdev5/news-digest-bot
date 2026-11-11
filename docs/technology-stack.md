@@ -1,9 +1,12 @@
 # Технологічний стек і готовність до реалізації
 
 Дата: 2026-11-11. Основні технології задані в ТЗ v4; тут доповнено
-інструментальну частину як технічні defaults. Пакети ще не встановлені,
-lockfile і Docker image ще не створені. Версії нижче — цільові гілки/контракти,
-а не твердження про вже перевірену сумісність конкретних patch releases.
+інструментальну частину як технічні defaults. Docker image ще не створений.
+
+Зафіксовано в `uv.lock` (2026-11-11, Python 3.13.18, uv 0.13.7): pydantic 2.14.3,
+typer 0.29.1, tzdata 2026.6, sqlalchemy 2.1.8, psycopg 3.3.8, alembic; dev — pytest 9.2.0, pytest-asyncio 1.4.1.post1,
+ruff 0.17.4, mypy 2.4.1. Telethon, openai та бібліотеки для сайтів ще не додані —
+вони з'являться на відповідних етапах. На Windows `tzdata` обов'язковий для `zoneinfo`.
 
 ## Повний вибір для MVP
 
@@ -19,7 +22,7 @@ lockfile і Docker image ще не створені. Версії нижче —
 | Сайти: HTTP | `httpx` (async) | Завантаження RSS/сторінок/статей із таймаутами, лімітами розміру й контролем redirect |
 | Сайти: RSS | `feedparser` | Читання RSS/Atom, дати публікації записів |
 | Сайти: HTML | `selectolax` (CSS-селектори) + `trafilatura` (виділення основного тексту) | Сторінки-списки за `selectors` і очищення статей до тексту |
-| Власні публікації | SQLite через стандартний `sqlite3` | Confirmed-only таблиця, транзакції, WAL і backup API |
+| Власні публікації | PostgreSQL 16 (`postgres:16-alpine`), SQLAlchemy 2, psycopg 3, Alembic | Confirmed-only таблиця, JSONB, транзакції, міграції; той самий стек, що в crypto-bot (D-022) |
 | Тимчасові дані | Файли JSON/JSONL, стандартні pathlib/json/tempfile/os | Run snapshots, source texts, drafts, cursors, atomic state writes |
 | Розклади | Власний невеликий модуль на asyncio + zoneinfo; tzdata в образі | Точні fixed windows, DST, revisions/cutover і незалежні профілі |
 | CLI | Typer | Команди `digest`, typed options, help та коди завершення |
@@ -35,10 +38,9 @@ lockfile і Docker image ще не створені. Версії нижче —
 з Python 3.13 і якості очищення на реальних сайтах власника (O-009). `feedparser` і
 `trafilatura` — синхронні; виконуються поза event loop.
 
-Синхронні файлові/SQLite операції виконуються поза критичним event loop.
-Для SQLite потрібна явна модель власника connection/транзакцій, не довільне
-використання одного connection у різних threads. Це деталізація реалізації,
-а не потреба в окремому сервері БД або ORM.
+Синхронні файлові операції й запити до БД виконуються поза критичним event loop
+(або через async engine SQLAlchemy з psycopg — рішення на етапі 5; на Windows async
+psycopg потребує SelectorEventLoop, робоча ціль — Linux-контейнер).
 
 Власний scheduler обраний через специфічні вікна/cutover і малу кількість профілів.
 Він очікує час, а не сканує Telegram у фоні. Wall clock визначає планову межу,
@@ -52,9 +54,9 @@ monotonic clock — timeout; clock jumps і зміни timezone перевіря
 Це звичайні результати реалізації, а не питання, які власник має проєктувати
 замість розробника:
 
-1. Зафіксувати сумісні точні версії в `uv.lock` і Python image digest.
+1. Зафіксувати Python image digest (lockfile для поточних залежностей уже є).
 2. Описати Pydantic/JSON schemas: config 4 (JSON, `target_channels`), AI stages,
-   cache, state, part manifest, confirmed publication; завершити SQLite DDL та CLI
+   cache, state, part manifest, confirmed publication; завершити схему БД та CLI
    error/exit-code контракт.
 3. Написати системні prompts із визначенням події, розвитку й суперечності,
    прикладами різних формулювань та обов'язковими source refs; промпти цільових

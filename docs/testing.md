@@ -1,8 +1,22 @@
 # Перевірки й приймання
 
-Це план тестування, **не звіт про виконані тести**. Стан на 2026-11-11:
-у репозиторії немає test suite або реалізації NewsDigest. Для нинішньої
-документаційної зміни перевіряються посилання, цілісність оригіналу й узгодженість.
+Це план тестування. Стан на 2026-11-11: є офлайн test suite етапу 1
+(`tests/unit` — 87 тестів без БД; `tests/integration` — 21 тест PostgreSQL):
+T01–T08, T14 (чиста логіка), M26, M27, схема БД частин і міграція, CLI.
+Тести PostgreSQL ще не запускалися на реальній БД (Docker був вимкнений). Решта T/M-сценаріїв ще не реалізована.
+
+Команди перевірок:
+
+```powershell
+.\run.cmd check      # ruff check + format --check + mypy + pytest у Docker
+.\run.cmd test -k dst
+```
+
+На Linux/macOS — `./run.sh check`. Ті самі перевірки з PostgreSQL виконує job `check`
+у `.github/workflows/deploy.yml` перед кожним автодеплоєм.
+
+Без Docker: `uv run pytest`, `uv run mypy src tests`,
+`uv run ruff check src tests`, `uv run ruff format --check src tests`.
 
 ## Початкові тести T01–T81
 
@@ -72,7 +86,8 @@
 
 - **Unit:** windows/DST/config merge, source order, normalization/dedup,
   validators, packing/Unicode, бюджети й transitions; керований clock.
-- **Integration офлайн:** локальна SQLite, тимчасові директорії, locks,
+- **Integration офлайн:** локальний PostgreSQL (тимчасова база на сесію тестів),
+  тимчасові директорії, locks,
   atomic writes, mock Telegram/OpenAI/HTTP, синтетичні RSS/HTML fixtures,
   backup/restore, network-call recorder.
 - **Fault injection:** падіння до/після durable writes, send, receipt, commit,

@@ -1,0 +1,88 @@
+name: Deploy
+
+# Деплой лише після потрапляння коду в main. Push у гілки й pull requests не деплоять.
+# Спершу офлайн-перевірки (ruff, mypy, pytest з PostgreSQL); деплой — тільки якщо вони пройшли.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: news_digest
+          POSTGRES_USER: news_digest
+          POSTGRES_PASSWORD: news_digest
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U news_digest -d news_digest"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: news_digest
+      POSTGRES_USER: news_digest
+      POSTGRES_PASSWORD: news_digest
+      NEWSDIGEST_REQUIRE_DB: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.7"
+      - name: Install Python and dependencies
+        run: |
+          uv python install 3.13
+          uv sync --locked
+      - name: Lint
+        run: |
+          uv run ruff check src tests
+          uv run ruff format --check src tests
+      - name: Type check
+        run: uv run mypy src tests
+      - name: Tests
+        run: uv run pytest
+
+  deploy:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate deployment revision
+        env:
+          DEPLOY_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/heads/main ]] || { echo 'Deploy blocked: main only' >&2; exit 1; }
+          [[ "$DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]] || \
+            { echo 'Deploy blocked: invalid revision' >&2; exit 1; }
+      - name: Deploy over SSH
+        env:
+          DEPLOY_SHA: ${{ github.sha }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          port="${DEPLOY_PORT:-22}"
+          ssh-keyscan -p "$port" -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          # На сервері ключ має forced command (deploy/ssh-entrypoint.sh): він приймає
+          # лише один рядок — SHA коміту — і нічого іншого виконати не дає.
+          printf '%s\n' "$DEPLOY_SHA" | \
+            ssh -i ~/.ssh/id_deploy -p "$port" \
+            -o IdentitiesOnly=yes \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'news-digest-deploy'

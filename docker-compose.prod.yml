@@ -1,0 +1,75 @@
+# Production-стек NewsDigest на сервері (/srv/news-digest): окремий Docker-проєкт
+# `news-digest` із двома контейнерами — власний PostgreSQL (`db`) і бот (`app`).
+# Від crypto-bot не залежить: своя мережа, свій том, свій пароль (D-023).
+#
+# Сервіс `app` має profile `worker`: довгоживучого worker (`digest run`) ще немає
+# (етап 2), тому `docker compose up -d` поки запускає лише `db`, а бот не крутиться
+# в restart-циклі. Міграції й офлайн-команди — через `run --rm app …`.
+# Коли worker з'явиться, profile прибрати.
+name: news-digest
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-news_digest}
+      POSTGRES_USER: ${POSTGRES_USER:-news_digest}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    # Порт навмисно не публікується: базу бачить лише `app` у мережі цього проєкту.
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    logging: &default-logging
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  app:
+    build:
+      context: .
+      target: runtime
+    image: local/newsdigest:prod
+    profiles: ["worker"]
+    command: ["digest", "run", "--config", "/config/config.json"]
+    restart: unless-stopped
+    environment:
+      TZ: Europe/Kyiv
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB:-news_digest}
+      POSTGRES_USER: ${POSTGRES_USER:-news_digest}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    depends_on:
+      db:
+        condition: service_healthy
+    user: "10001:10001"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt:
+      - "no-new-privileges:true"
+    volumes:
+      - ./config:/config:ro
+      - ./cache:/cache
+      - ./state:/state
+      - ./session:/session
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    secrets:
+      - postgres_password
+    logging: *default-logging
+
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password
+
+volumes:
+  pgdata:

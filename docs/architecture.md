@@ -116,7 +116,8 @@ restart можуть змінитися кількість частин, нум�
 
 ## Контракт контентної БД
 
-Предметна таблиця залишається `published_messages`, тільки підтверджені частини.
+Предметна таблиця PostgreSQL (D-022) — `published_messages`, тільки підтверджені частини.
+Схема: `src/newsdigest/storage/models.py` і міграції Alembic; JSON-поля — `JSONB`, час — `timestamptz`.
 Успішні перші частини не очікують доставки всієї серії для insert.
 
 Збережені поля v4: publication/profile/destination IDs, window/scheduled times,
@@ -140,7 +141,7 @@ CHECK(1 <= part_index AND part_index <= part_count)
 Repository транзакційно перевіряє однакові profile/window/destination/N/manifest
 у всіх частин digest; одного CHECK для цього недостатньо.
 
-`items_json` містить тільки фактично видимі пункти цієї частини. Evidence-цитат,
+`items` (JSONB) містить тільки фактично видимі пункти цієї частини. Evidence-цитат,
 raw, відкинутих кандидатів і майбутніх частин у рядку немає. Частина використаних
 source refs може зберігатися як metadata саме опублікованих пунктів.
 
@@ -149,7 +150,7 @@ Run-level usage у частинах не дублюється як N незал�
 інші мають посилання на той самий digest або nullable usage. За partial recovery
 недоступні usage/provenance позначаються unknown, не нулем.
 
-Після recovery без `items_json` цей запис не можна вважати повною змістовою
+Після recovery без `items` цей запис не можна вважати повною змістовою
 пам'яттю. До автоматичних наступних випусків оцінити відновлення пунктів із
 власного тексту або зафіксувати degraded memory; не відновлювати raw-архів.
 

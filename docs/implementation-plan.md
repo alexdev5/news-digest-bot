@@ -1,10 +1,41 @@
 # План реалізації
 
-Стан на 2026-11-11: **виконана підготовка документації**. Жоден етап застосунку
-нижче ще не виконаний; `main.py` залишається шаблоном. Базові вимоги — у
+Стан на 2026-11-11: документація підготовлена; **етап 1 частково виконаний**
+(див. «Результат етапу 1»). Решта етапів не розпочата. Базові вимоги — у
 [specification.md](specification.md), прогалини — у [review.md](review.md).
 
 ## 1. Каркас, схеми та офлайн-правила
+
+### Результат етапу 1 (2026-11-11)
+
+Зроблено:
+
+- `pyproject.toml` (uv, hatchling), `uv.lock`, `.python-version` = 3.13; пакет
+  `src/newsdigest`, CLI `digest` (Typer). Ruff, mypy `--strict`, pytest налаштовані.
+- `config/models.py`: Pydantic-моделі JSON schema 4 (`defaults`, `target_channels`,
+  `source_channels`, `source_sites`), `extra="forbid"`, валідація timezone, HH:MM,
+  тригерів, URL сайтів, Telegram-ref, унікальності id, циклів «ціль = джерело».
+- `config/loader.py`: JSON без дублікатів ключів і NaN, ліміт розміру, читання
+  `prompt_file` лише всередині теки конфігу. `config/effective.py` — успадкування `defaults`.
+- `telegram_refs.py`: нормалізація `@username`, `https://t.me/<username>`, `-100…`.
+- `scheduling.py`: daily_slots і fixed_interval, DST (first_occurrence /
+  shift_forward, злиття колізій), вікна `[start,end)`, `scan_start_at`, перша
+  активація без backfill, misfires із grace, перехід розкладу `[C,N)`.
+- `identity.py`: `digest_key`, `part_key`, канонічний UTC-формат.
+- `storage/models.py` + Alembic-міграція `0001`: confirmed-only PostgreSQL (D-022),
+  рядок на частину, `source_message_ids` JSONB з GIN-індексом (D-012), UNIQUE/CHECK
+  для частин і JSON-полів. `settings.py` — підключення зі змінних `POSTGRES_*`.
+- `config/config.example.json`, `config/prompts/dnipro_news.md`.
+- Команди: `digest validate-config`, `digest schedule --channel <id> | --all`, `digest migrate`.
+- Docker: `Dockerfile`, `docker-compose.yml` (db + app), обгортки `run.cmd`/`run.ps1`/`run.sh`.
+- 87 тестів без БД проходять; 21 інтеграційний тест PostgreSQL написаний, але
+  **ще не запускався** (Docker Desktop був вимкнений). ruff і mypy без зауважень.
+
+Ще не зроблено в межах етапу 1: versioned schemas `/state` і part manifest,
+публічні enums статусів/помилок поза CLI exit codes, state-модель schedule revisions
+(є лише чиста функція переходу). Переносяться на етап 2 разом зі state storage.
+
+Початковий план етапу:
 
 Результат:
 
@@ -17,7 +48,7 @@
 - `config/config.example.json`, versioned state/manifest/confirmed-part schemas.
 - Публічні enums errors/statuses, exit codes, schema compatibility policy.
 - Чиста логіка schedule/windows/DST/cutover, `scan_start_at` і успадкування `defaults`.
-- Порожня confirmed-only SQLite-схема з підтримкою N частин, `source_message_ids`
+- Порожня confirmed-only схема PostgreSQL з підтримкою N частин, `source_message_ids`
   і nullable recovery metadata.
 
 Приймання: offline validation не звертається до Telegram/OpenAI; тести вікон,

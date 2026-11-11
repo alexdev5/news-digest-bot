@@ -10,7 +10,7 @@ from __future__ import annotations
 import functools
 import hashlib
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from newsdigest.cache.run_cache import CachedMessage, RunCache, RunManifest, SourceProgress
@@ -19,6 +19,7 @@ from newsdigest.scheduling import Window
 from newsdigest.state.store import PinnedPeer, StateStore
 from newsdigest.telegram.rate_limit import RateLimiter
 from newsdigest.telegram.types import (
+    AccountUnavailable,
     FloodWaitPause,
     RawMessage,
     ResolvedPeer,
@@ -62,6 +63,8 @@ class ScanSummary:
     in_window: int
     excluded: dict[str, int]
     edited_after_cutoff: int = 0
+    details: dict[str, dict[str, object]] = field(default_factory=dict)
+    excluded_sources: list[dict[str, str | int]] = field(default_factory=list)
 
     @property
     def complete(self) -> bool:
@@ -140,6 +143,8 @@ class HistoryScanner:
                 flood = exc
                 progress.status = "partial"
                 progress.error_code = exc.code
+            except AccountUnavailable:
+                raise
             except TelegramError as exc:
                 progress.status = "unavailable" if progress.pages == 0 else "partial"
                 progress.error_code = exc.code
@@ -183,6 +188,14 @@ class HistoryScanner:
                 reason = classify(message, window)
                 if reason is not None:
                     progress.excluded[reason] = progress.excluded.get(reason, 0) + 1
+                    diagnostic: dict[str, str | int] = {
+                        "source_id": source.id,
+                        "peer_id": peer.peer_id,
+                        "message_id": message.message_id,
+                        "reason": reason,
+                    }
+                    if diagnostic not in manifest.excluded_sources:
+                        manifest.excluded_sources.append(diagnostic)
                     continue
                 if edited_after_cutoff(message, window):
                     progress.edited_after_cutoff += 1
@@ -227,4 +240,14 @@ def summarize(manifest: RunManifest) -> ScanSummary:
         in_window=sum(p.in_window for p in manifest.sources.values()),
         excluded=dict(sorted(excluded.items())),
         edited_after_cutoff=sum(p.edited_after_cutoff for p in manifest.sources.values()),
+        details={
+            sid: {
+                "status": p.status,
+                "fetched": p.fetched,
+                "in_window": p.in_window,
+                "error_code": p.error_code,
+            }
+            for sid, p in manifest.sources.items()
+        },
+        excluded_sources=list(manifest.excluded_sources),
     )

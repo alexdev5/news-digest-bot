@@ -249,6 +249,10 @@ def ai_answer_all(create_calls: list[dict[str, Any]]):  # type: ignore[no-untype
                     "emoji": "📰",
                     "title": c["text"][:60],
                     "summary": "",
+                    "layout": "compact",
+                    "bullets": [],
+                    "quote": "",
+                    "quote_candidate_id": "",
                     "is_update": False,
                 }
                 for i, c in enumerate(candidates)
@@ -372,8 +376,8 @@ async def test_manual_run_without_publications_starts_at_last_boundary_d029(
     record = await h.worker.run_now(config().target_channels[0])
     assert record is not None and record.manual
     assert (record.window_start_utc, record.window_end_utc) == (
+        kyiv(2026, 11, 9, 21),
         kyiv(2026, 11, 10, 8),
-        kyiv(2026, 11, 10, 12),
     )
     assert record.status == "published"
 
@@ -387,12 +391,12 @@ async def test_next_scheduled_window_starts_after_manual_run_d029(tmp_path: Path
     await h.worker.tick()
     scheduled = [r for r in h.runs() if not r.manual]
     assert [(r.window_start_utc, r.window_end_utc) for r in scheduled] == [
-        (kyiv(2026, 11, 10, 12), kyiv(2026, 11, 10, 21))
+        (kyiv(2026, 11, 10, 8), kyiv(2026, 11, 10, 21))
     ]
 
 
 async def test_manual_run_uses_db_last_published_end(tmp_path: Path) -> None:
-    h = Harness(tmp_path, kyiv(2026, 11, 10, 12))
+    h = Harness(tmp_path, kyiv(2026, 11, 10, 21, 31))
     with_delivery(h)
     h.worker._published_end = lambda _cid: kyiv(2026, 11, 10, 10, 30)
     h.worker.initialize()

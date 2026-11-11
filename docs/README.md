@@ -1,7 +1,7 @@
 # Документація NewsDigest
 
-Дата підготовки: **2026-11-11**. Це проєктні контракти й план робіт, а не звіт
-про готовий застосунок. Реалізовано лише частину етапу 1 (див. [context.md](context.md)).
+Оновлено: **2026-11-11**. Реалізовані основні етапи 1–5: Telegram, AI та доставка.
+Сайти й повна backup/restore-звірка ще не готові. Фактичний стан — у [context.md](context.md).
 
 ## Навігація
 
@@ -16,7 +16,10 @@
 | [implementation-plan.md](implementation-plan.md) | Послідовність реалізації й результати етапів |
 | [testing.md](testing.md) | Перенесення T01–T81, нові сценарії, критерії приймання |
 | [operations.md](operations.md) | Проєктний порядок запуску та відновлення |
-| [deployment.md](deployment.md) | Розгортання на сервері поруч із crypto-bot, спільний PostgreSQL |
+| [manual-window.md](manual-window.md) | Ручний період і повторна обробка, локально та на сервері |
+| [editorial-format.md](editorial-format.md) | Стислість відносно оригіналу, списки підподій і цитати |
+| [deployment.md](deployment.md) | Розгортання поруч із crypto-bot, окремий PostgreSQL |
+| [bugfix-2026-11-11.md](bugfix-2026-11-11.md) | Виправлення вікна, повноти новин, промпту й доставки |
 | [references.md](references.md) | Звірені зовнішні контракти та джерела |
 | [specs/newsdigest-v4.txt](specs/newsdigest-v4.txt) | Незмінний оригінал детального ТЗ |
 

@@ -91,10 +91,10 @@ Crypto-bot і його стек `postgres` не використовуються
 `… run --rm app digest scan --config /config/config.json --channel <id>` — теж
 лише при зупиненому worker.
 
-## Ручний прогін (D-029)
+## Ручний прогін (D-031/D-033)
 
-Сканує джерела, збирає випуск і **публікує** вікно від останньої публікації (або
-найближчої минулої межі) до поточного моменту:
+Сканує джерела, збирає випуск і **публікує** останній завершений інтервал schedule
+(для 08/15/21 запуск о 21:31 бере 15:00–21:00):
 
 ```bash
 docker compose -f docker-compose.prod.yml --profile worker exec app digest run-now --config /config/config.json --channel <id>
@@ -102,6 +102,10 @@ docker compose -f docker-compose.prod.yml --profile worker exec app digest run-n
 
 Якщо worker працює (звичайний стан), команда передає йому запит, і він виконає прогін
 протягом ~30 секунд; результат — у `digest status`. Локально: `.\run.cmd run-now --channel <id>`.
+
+Для явних меж часу й повторного включення новин є `digest run-window --from …
+--to … --ignore-published`. Працює через той самий контейнер і чергу worker,
+без зупинки сервісу. Повні команди — [manual-window.md](manual-window.md).
 
 ## Публікація (етап 5)
 

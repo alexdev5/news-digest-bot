@@ -84,15 +84,23 @@ GOOD = {
         {
             "candidate_ids": ["c1", "c2"],
             "emoji": "⚡",
-            "title": "Відновили електропостачання",
-            "summary": "Світло повернули у 3 громади.",
+            "title": "Світло повернули у 3 громади.",
+            "summary": "",
+            "layout": "compact",
+            "bullets": [],
+            "quote": "",
+            "quote_candidate_id": "",
             "is_update": False,
         },
         {
             "candidate_ids": ["c4"],
             "emoji": "🚆",
             "title": "Додали потяги на вихідні",
-            "summary": "Призначили додаткові рейси.",
+            "summary": "",
+            "layout": "compact",
+            "bullets": [],
+            "quote": "",
+            "quote_candidate_id": "",
             "is_update": False,
         },
     ],
@@ -170,9 +178,9 @@ class TestGrouping:
     async def test_invalid_answer_retried_with_feedback(self) -> None:
         bad = json.loads(json.dumps(GOOD))
         bad["events"][0]["candidate_ids"] = ["c1", "zzz"]
-        create = FakeCreate(bad, GOOD)
+        create = FakeCreate(bad, GOOD, {"duplicates": []})
         result = await group_with_ai(CANDIDATES, OpenAIProvider(create, SETTINGS), CONTEXT)
-        assert len(create.calls) == 2
+        assert len(create.calls) == 3
         assert "zzz" in " ".join(create.payload(1)["previous_answer_problems"])
         assert len(result.events) == 2
 
@@ -191,24 +199,28 @@ class TestGrouping:
                     "candidate_ids": ["c4"],
                     "emoji": "🚆",
                     "title": "Додали потяги",
+                    "layout": "compact",
+                    "bullets": [],
+                    "quote": "",
+                    "quote_candidate_id": "",
                     "summary": "",
                     "is_update": False,
                 }
             ],
             "excluded": [],
         }
-        create = FakeCreate(partial, repair)
+        create = FakeCreate(partial, repair, {"duplicates": []})
         result = await group_with_ai(CANDIDATES, OpenAIProvider(create, SETTINGS), CONTEXT)
         assert [c["id"] for c in create.payload(1)["candidates"]] == ["c4"]
         assert len(result.events) == 2 and result.unprocessed == []
 
-    async def test_still_missing_is_counted_not_lost(self) -> None:
+    async def test_still_missing_is_published_without_it(self) -> None:
         partial = json.loads(json.dumps(GOOD))
         partial["events"] = partial["events"][:1]
         empty: dict[str, Any] = {"events": [], "excluded": []}
-        create = FakeCreate(partial, empty, empty)
+        create = FakeCreate(partial, empty, empty, empty, empty)
         result = await group_with_ai(CANDIDATES, OpenAIProvider(create, SETTINGS), CONTEXT)
-        assert result.unprocessed == ["c4"]
+        assert len(result.events) == 1 and result.unprocessed == ["c4"]
         assert result.excluded["ai_unprocessed"] == 1
 
     async def test_no_valid_answer_fails_run_d011(self) -> None:
@@ -246,13 +258,17 @@ async def test_one_bad_event_does_not_discard_others() -> None:
                 "candidate_ids": ["c4"],
                 "emoji": "🚆",
                 "title": "Додали потяги на вихідні",
-                "summary": "Призначили додаткові рейси.",
+                "summary": "",
+                "layout": "compact",
+                "bullets": [],
+                "quote": "",
+                "quote_candidate_id": "",
                 "is_update": False,
             }
         ],
         "excluded": [],
     }
-    create = FakeCreate(bad, fixed)
+    create = FakeCreate(bad, fixed, {"duplicates": []})
     result = await group_with_ai(CANDIDATES, OpenAIProvider(create, SETTINGS), CONTEXT)
     assert len(result.events) == 2
     assert [c["id"] for c in create.payload(1)["candidates"]] == ["c4"]
@@ -268,8 +284,12 @@ def test_date_parts_count_as_source_numbers() -> None:
             {
                 "candidate_ids": ["d1"],
                 "emoji": "🏛",
-                "title": "Засідання 11 листопада",
-                "summary": "Початок о 15:30, учасників 1000.",
+                "title": "Засідання 11.11 о 15:30: 1000 учасників.",
+                "summary": "",
+                "layout": "compact",
+                "bullets": [],
+                "quote": "",
+                "quote_candidate_id": "",
                 "is_update": False,
             }
         ],

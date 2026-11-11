@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from newsdigest.scheduling import Window, to_utc
 
 _KEY_VERSION = "v1"
+MANUAL_KEY_PREFIX = "manual"
 
 
 def format_utc(moment: datetime) -> str:
@@ -19,11 +20,14 @@ def parse_utc(value: str) -> datetime:
     return datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=UTC)
 
 
-def digest_key(channel_id: str, window: Window) -> str:
-    """Ключ логічного випуску: цільовий канал + межі вікна. Ревізія конфігу не входить."""
+def digest_key(channel_id: str, window: Window, *, request_id: str | None = None) -> str:
+    """Канал + межі; для явного ручного випуску також request ID. Без ревізії конфігу."""
     canonical = "|".join(
         (_KEY_VERSION, channel_id, format_utc(window.start_utc), format_utc(window.end_utc))
     )
+    if request_id is not None:
+        # Explicit reprocessing gets a separate identity; retries reuse the request ID.
+        return MANUAL_KEY_PREFIX + hashlib.sha256(f"{canonical}|{request_id}".encode()).hexdigest()
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 

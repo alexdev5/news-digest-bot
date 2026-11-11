@@ -1,4 +1,4 @@
-0. copy to server
+0. copy to server (виконувати локально). Після копіювання перезапустити контейнер на сервері (#6).
 scp config/config.json root@187.127.94.74:/srv/news-digest/config/config.json
 
 1. Перевірка сесії, джерел і права публікації (історію каналів не читає):
@@ -16,5 +16,18 @@ docker compose -f docker-compose.prod.yml --profile worker exec app digest statu
 5. Логи worker, якщо треба:
 docker compose -f docker-compose.prod.yml --profile worker logs -f --tail=50 app
 
-6. Перезапустити воркер
+6. Перезапустити воркер (контейнер на сервері)
 docker compose -f docker-compose.prod.yml --profile worker restart app
+cd /srv/news-digest && docker compose -f docker-compose.prod.yml --profile worker restart app
+
+7. Запустити прогон по джерелам, на сервері вручну
+cd /srv/news-digest && docker compose -f docker-compose.prod.yml --profile worker exec app digest run-now --config /config/config.json --channel news_digest_ua
+
+8. Сканування та публікація на сервері, ігноруючи вже опубліковані пости
+docker compose -f docker-compose.prod.yml --profile worker exec -T app \
+  digest run-window --config /config/config.json --channel news_digest_ua \
+  --from "2026-11-11T15:00:00+02:00" --to "2026-11-11T21:00:00+02:00" \
+  --ignore-published
+
+9. Запуск локально.
+.\run.cmd run-window --channel news_digest_ua --from "2026-11-11T09:00:00+02:00" --to "2026-11-11T21:00:00+02:00" --ignore-published

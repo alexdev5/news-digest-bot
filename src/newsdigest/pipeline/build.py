@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo
 
 from newsdigest.cache.run_cache import CachedMessage
 from newsdigest.config.models import TargetChannel
 from newsdigest.identity import digest_key
-from newsdigest.pipeline.candidates import Candidate, CandidateSet, build_candidates
+from newsdigest.pipeline.candidates import Candidate, CandidateSet, SourceRef, build_candidates
 from newsdigest.pipeline.events import Event, ordered, preview_events
 from newsdigest.pipeline.plan import PublicationPlan, build_plan
 from newsdigest.pipeline.render import Header, render_series
@@ -27,6 +27,9 @@ class Grouped:
     events: list[Event]
     excluded: dict[str, int]
     tokens: dict[str, int] | None = None
+    excluded_sources: list[dict[str, str | int]] = field(default_factory=list)
+    unfinished_refs: frozenset[SourceRef] = frozenset()
+    """Дописи, частину змісту яких AI не обробив (`ai_unprocessed`)."""
 
 
 async def draft_grouper(candidates: Sequence[Candidate]) -> Grouped:
@@ -45,10 +48,14 @@ def source_maps(
     labels: dict[str, str] = {}
     peers = runtime.peers if runtime is not None else {}
     for source in channel.source_channels:
+        if not source.enabled:
+            continue
         positions[source.id] = len(positions)
         pinned = peers.get(str(parse_telegram_ref(source.ref)))
         labels[source.id] = source.name or (pinned.title if pinned else source.id)
     for site in channel.source_sites:
+        if not site.enabled:
+            continue
         positions[site.id] = len(positions)
         labels[site.id] = site.name
     return positions, labels
@@ -72,6 +79,7 @@ async def build_digest(
     runtime: RuntimeState | None = None,
     published: set[tuple[object, ...]] | None = None,
     grouper: Grouper = draft_grouper,
+    run_key: str | None = None,
 ) -> BuiltDigest:
     positions, labels = source_maps(channel, runtime)
     candidates = build_candidates(
@@ -84,6 +92,7 @@ async def build_digest(
     grouped = await grouper(candidates.candidates) if candidates.candidates else Grouped([], {})
     for reason, count in grouped.excluded.items():
         candidates.count(reason, count)
+    candidates.excluded_sources.extend(grouped.excluded_sources)
     events = ordered(grouped.events)
     header = Header(
         template=channel.format.header,
@@ -94,11 +103,12 @@ async def build_digest(
     )
     parts = render_series(events, header, max_chars)
     plan = build_plan(
-        digest_key(channel.id, window),
+        run_key or digest_key(channel.id, window),
         channel.id,
         window.start_utc,
         window.end_utc,
         events,
         parts,
+        unfinished=grouped.unfinished_refs,
     )
     return BuiltDigest(candidates=candidates, events=events, plan=plan, tokens=grouped.tokens)

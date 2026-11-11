@@ -67,9 +67,21 @@ class Candidate:
 class CandidateSet:
     candidates: list[Candidate]
     excluded: dict[str, int] = field(default_factory=dict)
+    excluded_sources: list[dict[str, str | int]] = field(default_factory=list)
 
     def count(self, reason: str, amount: int = 1) -> None:
         self.excluded[reason] = self.excluded.get(reason, 0) + amount
+
+    def record_exclusion(self, reason: str, messages: Sequence[CachedMessage]) -> None:
+        self.excluded_sources.extend(
+            {
+                "source_id": m.source_id,
+                "peer_id": m.peer_id,
+                "message_id": m.message_id,
+                "reason": reason,
+            }
+            for m in messages
+        )
 
 
 def normalize_text(text: str) -> str:
@@ -132,31 +144,37 @@ def build_candidates(
         first = group[0]
         if first.source_id not in positions:
             result.count("unknown_source", len(group))
+            result.record_exclusion("unknown_source", group)
             continue
         text = "\n".join(m.text for m in group if m.text.strip())
-        ref = SourceRef(
-            source_id=first.source_id,
-            source_type=first.source_type,
-            peer_id=first.peer_id,
-            message_id=first.message_id,
-            url=first.url,
-            date_utc=min(m.date_utc for m in group),
-            label=labels.get(first.source_id, first.source_id),
-            position=positions[first.source_id],
-        )
+        refs = [
+            SourceRef(
+                source_id=m.source_id,
+                source_type=m.source_type,
+                peer_id=m.peer_id,
+                message_id=m.message_id,
+                url=m.url,
+                date_utc=m.date_utc,
+                label=labels.get(first.source_id, first.source_id),
+                position=positions[first.source_id],
+            )
+            for m in group
+        ]
         if any(_message_key(m) in already for m in group):
             result.count("already_published")
+            result.record_exclusion("already_published", group)
             continue
         folded = text.casefold()
         if any(p in folded for p in patterns):
             result.count("filtered")
+            result.record_exclusion("filtered", group)
             continue
         digest = text_hash(text)
         if digest in by_hash:
-            by_hash[digest][1].append(ref)
+            by_hash[digest][1].extend(refs)
             result.count("exact_duplicate")
             continue
-        by_hash[digest] = (text, [ref])
+        by_hash[digest] = (text, refs)
         order.append(digest)
 
     candidates = [

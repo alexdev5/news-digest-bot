@@ -17,6 +17,7 @@ from typing import Annotated, Any
 
 import typer
 
+from newsdigest.ai.trace import failure_detail
 from newsdigest.cache.run_cache import CacheManager
 from newsdigest.cli_common import DEFAULT_CONFIG, ConfigOption, ExitCode
 from newsdigest.config.effective import effective_channel
@@ -30,6 +31,7 @@ from newsdigest.settings import (
     telegram_settings_from_env,
 )
 from newsdigest.state import LockBusyError, ProcessLock, StateCorruptError, StateStore
+from newsdigest.state.store import ManualRequest
 from newsdigest.telegram.rate_limit import RateLimiter, flood_wait_seconds
 from newsdigest.telegram.scanner import HistoryScanner
 from newsdigest.telegram.types import FloodWaitPause, TelegramError, TelegramGateway
@@ -44,6 +46,18 @@ def utcnow() -> datetime:
 def _exit(code: int, message: str) -> typer.Exit:
     typer.echo(message, err=True)
     return typer.Exit(code)
+
+
+def _show_ai_failure(cache_dir: Path, digest_key: str, error_code: str | None) -> None:
+    if not error_code or not error_code.startswith("ai_"):
+        return
+    directory = CacheManager(cache_dir).run(digest_key).directory
+    detail = failure_detail(directory)
+    if detail:
+        typer.echo(f"  Причина AI-збою: {detail}")
+        typer.echo(f"  Діагностика в тимчасовому кеші: {directory / 'ai'}")
+    else:
+        typer.echo("  Деталі AI-збою не збережені або кеш уже очищено.")
 
 
 def telegram_env() -> tuple[Paths, TelegramSettings]:
@@ -304,7 +318,7 @@ def register(app: typer.Typer, load: Callable[[Path], AppConfig]) -> None:
 
         paths, settings = telegram_env()
         store = StateStore(paths.state_dir)
-        cache = CacheManager(paths.cache_dir)
+        cache = CacheManager(paths.cache_dir).inspection()
         lock = locked(store)
         try:
             executor = RunExecutor(
@@ -374,7 +388,7 @@ def register(app: typer.Typer, load: Callable[[Path], AppConfig]) -> None:
 
         paths, settings = telegram_env()
         store = StateStore(paths.state_dir)
-        cache = CacheManager(paths.cache_dir)
+        cache = CacheManager(paths.cache_dir).inspection()
         lock = locked(store)
         try:
             executor = RunExecutor(
@@ -498,7 +512,7 @@ def register(app: typer.Typer, load: Callable[[Path], AppConfig]) -> None:
             worker = Worker(cfg, store, cache, executor, utcnow, delivery=delivery)
             if target.id not in store.load_runtime().channels:
                 raise _exit(ExitCode.USAGE_ERROR, "Канал ще не активований worker-ом.")
-            asyncio.run(worker.publish_pending(target, utcnow()))
+            asyncio.run(worker.publish_pending(target, utcnow(), force=True))
         finally:
             lock.release()
         state = store.load_runtime().channels[target.id]
@@ -550,8 +564,8 @@ def register(app: typer.Typer, load: Callable[[Path], AppConfig]) -> None:
         config: ConfigOption = DEFAULT_CONFIG,
         channel: Annotated[str, typer.Option(help="id цільового каналу.")] = "",
     ) -> None:
-        """Ручний прогін і ПУБЛІКАЦІЯ: вікно від останньої публікації (або найближчої
-        минулої межі) до зараз (D-029). Якщо worker запущено — передає йому запит."""
+        """ПУБЛІКАЦІЯ останнього завершеного інтервалу schedule (D-031).
+        Уже покрита частина вікна пропускається. Запущений worker приймає запит."""
         from newsdigest.logging_setup import setup_logging
 
         cfg = load(config)
@@ -581,7 +595,7 @@ def register(app: typer.Typer, load: Callable[[Path], AppConfig]) -> None:
         finally:
             lock.release()
         if record is None:
-            typer.echo("Нових дописів немає: усе вже опубліковано до цього моменту.")
+            typer.echo("Немає нового завершеного інтервалу розкладу.")
             return
         tz = effective_channel(cfg, target).timezone
         typer.echo(
@@ -592,10 +606,92 @@ def register(app: typer.Typer, load: Callable[[Path], AppConfig]) -> None:
         if record.events is not None:
             typer.echo(f"  подій: {record.events}, повідомлень: {record.parts}")
         if record.status not in ("published",):
+            _show_ai_failure(paths.cache_dir, record.digest_key, record.error_code)
+            raise typer.Exit(ExitCode.TELEGRAM_ERROR)
+
+    @app.command("run-window")
+    def run_window(
+        start: Annotated[str, typer.Option("--from", help="Початок включно, ISO 8601 з offset.")],
+        end: Annotated[str, typer.Option("--to", help="Кінець не включно, ISO 8601 з offset.")],
+        channel: Annotated[str, typer.Option(help="id цільового каналу.")],
+        config: ConfigOption = DEFAULT_CONFIG,
+        ignore_published: Annotated[
+            bool,
+            typer.Option("--ignore-published", help="Повторно включати вже опубліковані новини."),
+        ] = False,
+    ) -> None:
+        """Сканування → AI → ПУБЛІКАЦІЯ довільного минулого періоду [--from, --to).
+
+        За замовчуванням пропускає опубліковане. --ignore-published вимикає перевірку
+        використаних ID і пам'ять AI, але не захист доставки від повторного send.
+        """
+        from newsdigest.logging_setup import setup_logging
+        from newsdigest.worker import Worker
+
+        cfg = load(config)
+        target = _select(cfg, channel)
+        try:
+            window = Window(datetime.fromisoformat(start), datetime.fromisoformat(end))
+            Worker.validate_manual_window(target, window, utcnow())
+        except ValueError as exc:
+            raise _exit(
+                ExitCode.USAGE_ERROR,
+                f"Некоректний період: {exc}. Формат: 2026-11-11T15:00:00+02:00.",
+            ) from exc
+        request = ManualRequest(
+            channel_id=target.id,
+            requested_at_utc=utcnow(),
+            window_start_utc=window.start_utc,
+            window_end_utc=window.end_utc,
+            ignore_published=ignore_published,
+        )
+        paths, settings = telegram_env()
+        store = StateStore(paths.state_dir)
+        lock = ProcessLock(store.lock_path)
+        try:
+            lock.acquire()
+        except LockBusyError:
+            store.queue_manual_request(request)
+            typer.echo(
+                f"Запит {request.request_id} передано worker: {start} → {end}, "
+                f"ignore_published={ignore_published}. Результат: digest status --details."
+            )
+            return
+
+        setup_logging("WARNING")
+        try:
+            worker = build_worker(cfg, config, paths, settings, store)
+            worker.initialize()
+            record = asyncio.run(
+                worker.run_window(
+                    target,
+                    window,
+                    ignore_published=ignore_published,
+                    request_id=request.request_id,
+                )
+            )
+        finally:
+            lock.release()
+        tz = effective_channel(cfg, target).timezone
+        typer.echo(
+            f"Запит {request.request_id}: "
+            f"{record.window_start_utc.astimezone(tz):%Y-%m-%d %H:%M} → "
+            f"{record.window_end_utc.astimezone(tz):%Y-%m-%d %H:%M} ({tz.key}), "
+            f"{record.status}" + (f" {record.error_code}" if record.error_code else "")
+        )
+        if record.events is not None:
+            typer.echo(f"  подій: {record.events}, повідомлень: {record.parts}")
+        if record.status != "published":
+            _show_ai_failure(paths.cache_dir, record.digest_key, record.error_code)
             raise typer.Exit(ExitCode.TELEGRAM_ERROR)
 
     @app.command("status")
-    def status(config: ConfigOption = DEFAULT_CONFIG) -> None:
+    def status(
+        config: ConfigOption = DEFAULT_CONFIG,
+        details: Annotated[
+            bool, typer.Option("--details", help="ID відкинутих дописів і причини.")
+        ] = False,
+    ) -> None:
         """Стан каналів, останні runs, пауза FloodWait, heartbeat. Мережі не використовує."""
         from newsdigest.scheduling import next_boundary_rev
 
@@ -617,6 +713,10 @@ def register(app: typer.Typer, load: Callable[[Path], AppConfig]) -> None:
         unresolved = store.load_guards().unresolved()
         if unresolved:
             typer.echo(f"невирішених частин доставки: {len(unresolved)} (див. digest reconcile)")
+        from newsdigest.worker import owner_action_needed
+
+        for blocked in owner_action_needed(runtime):
+            typer.echo(f"ПОТРІБНА ДІЯ ВЛАСНИКА — доставка зупинена: {blocked}")
         if limits.pause_until_utc and limits.pause_until_utc > now:
             typer.echo(f"FloodWait-пауза до {limits.pause_until_utc.isoformat()}")
         for channel in cfg.target_channels:
@@ -634,16 +734,36 @@ def register(app: typer.Typer, load: Callable[[Path], AppConfig]) -> None:
             for record in state.runs[-5:]:
                 coverage = ", ".join(f"{k}={v.status}" for k, v in record.coverage.items())
                 typer.echo(
-                    f"  {record.window_end_utc.astimezone(tz):%Y-%m-%d %H:%M} "
+                    f"  {record.window_start_utc.astimezone(tz):%Y-%m-%d %H:%M} → "
+                    f"{record.window_end_utc.astimezone(tz):%Y-%m-%d %H:%M} "
                     f"{record.status}{' ' + record.error_code if record.error_code else ''}"
                     f"{' [' + coverage + ']' if coverage else ''}"
                 )
+                if record.manual_request_id is not None:
+                    typer.echo(
+                        f"    запит {record.manual_request_id}, "
+                        f"ignore_published={record.ignore_published}"
+                    )
+                if details:
+                    _show_ai_failure(
+                        paths_from_env().cache_dir, record.digest_key, record.error_code
+                    )
+                    for sid, source in record.coverage.items():
+                        typer.echo(
+                            f"    {sid}: {source.in_window} у вікні, {source.status}"
+                            + (f" ({source.error_code})" if source.error_code else "")
+                        )
+                    for excluded in record.excluded_sources:
+                        typer.echo(
+                            f"    {excluded['source_id']} "
+                            f"{excluded['peer_id']}/{excluded['message_id']}: {excluded['reason']}"
+                        )
 
     @app.command("cache-status")
     def cache_status() -> None:
         """Обсяг і TTL тимчасового кешу (без текстів)."""
         cache = CacheManager(paths_from_env().cache_dir)
-        entries = cache.entries()
+        entries = cache.entries() + cache.inspection().entries()
         total = sum(e.size_bytes for e in entries)
         typer.echo(f"runs у кеші: {len(entries)}, обсяг {total} байт, ліміт {cache.max_bytes}")
         for entry in entries:
@@ -659,7 +779,8 @@ def register(app: typer.Typer, load: Callable[[Path], AppConfig]) -> None:
         store = StateStore(paths.state_dir)
         lock = locked(store)
         try:
-            removed = CacheManager(paths.cache_dir).cleanup_expired(utcnow())
+            cache = CacheManager(paths.cache_dir)
+            removed = cache.cleanup_expired(utcnow()) + cache.inspection().cleanup_expired(utcnow())
         finally:
             lock.release()
         typer.echo(f"видалено прострочених runs: {len(removed)}")
@@ -677,4 +798,15 @@ def register(app: typer.Typer, load: Callable[[Path], AppConfig]) -> None:
         age = (utcnow() - heartbeat.at_utc).total_seconds()
         if age > HEALTHY_HEARTBEAT_SECONDS:
             raise _exit(ExitCode.UNHEALTHY, f"heartbeat застарів: {int(age)} с")
+        from newsdigest.worker import owner_action_needed
+
+        try:
+            blocked = owner_action_needed(store.load_runtime())
+        except StateCorruptError as exc:
+            raise _exit(ExitCode.UNHEALTHY, f"стан пошкоджений: {exc}") from exc
+        if blocked:
+            raise _exit(
+                ExitCode.UNHEALTHY,
+                "доставка зупинена, потрібна дія власника: " + "; ".join(blocked),
+            )
         typer.echo(f"OK: heartbeat {int(age)} с тому")

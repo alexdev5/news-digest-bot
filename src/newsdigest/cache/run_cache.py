@@ -58,6 +58,7 @@ class RunManifest(CacheModel):
     created_at_utc: AwareDatetime
     expires_at_utc: AwareDatetime
     sources: dict[str, SourceProgress] = Field(default_factory=dict)
+    excluded_sources: list[dict[str, str | int]] = Field(default_factory=list)
 
 
 class CachedMessage(CacheModel):
@@ -172,9 +173,13 @@ class CacheManager:
     def runs_dir(self) -> Path:
         return self.root / "runs"
 
+    def inspection(self) -> CacheManager:
+        """CLI scan/preview never share payloads with production delivery."""
+        return CacheManager(self.root / "inspection", int(self.ttl.total_seconds()), self.max_bytes)
+
     def run(self, digest_key: str) -> RunCache:
         if not digest_key.isalnum():
-            raise ValueError("digest_key має бути hex-рядком")
+            raise ValueError("digest_key має містити тільки літери й цифри")
         return RunCache(self.runs_dir / digest_key)
 
     def open_or_create(

@@ -7,17 +7,19 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from getpass import getpass
 from typing import Any
 
-from telethon import TelegramClient, types, utils
+from telethon import TelegramClient, errors, types, utils
 
 from newsdigest.settings import Paths, TelegramSettings
+from newsdigest.telegram.rate_limit import flood_wait_seconds
 from newsdigest.telegram.types import (
     AccountInfo,
+    AccountUnavailable,
     DialogInfo,
     OwnMessage,
     RawMessage,
@@ -26,6 +28,21 @@ from newsdigest.telegram.types import (
     SentMessage,
     TelegramError,
 )
+
+
+async def _read[T](operation: Awaitable[T]) -> T:
+    """Normalize read failures; FloodWait still belongs to the shared limiter."""
+    try:
+        return await operation
+    except (errors.AuthKeyError, errors.UnauthorizedError) as exc:
+        raise AccountUnavailable("auth_required", type(exc).__name__) from exc
+    except errors.RPCError as exc:
+        if flood_wait_seconds(exc) is not None:
+            raise
+        raise TelegramError("source_unavailable", type(exc).__name__) from exc
+    except (OSError, TimeoutError) as exc:
+        raise TelegramError("network", type(exc).__name__) from exc
+
 
 # Помилки, після яких повідомлення гарантовано НЕ надіслано (Telegram відхилив запит).
 _REJECTED_ERRORS = {
@@ -141,16 +158,18 @@ class TelethonGateway:
         self._client = client
 
     async def account(self) -> AccountInfo:
-        me = await self._client.get_me()
+        me = await _read(self._client.get_me())
         if me is None:
-            raise TelegramError("auth_required", "сесія не авторизована: виконайте digest login")
+            raise AccountUnavailable(
+                "auth_required", "сесія не авторизована: виконайте digest login"
+            )
         name = " ".join(p for p in (me.first_name, me.last_name) if p) or str(me.id)
         return AccountInfo(account_id=int(me.id), is_bot=bool(me.bot), display_name=name)
 
     async def resolve(self, ref: str) -> ResolvedPeer:
         target: str | int = int(ref) if ref.lstrip("-").isdigit() else ref
         try:
-            entity = await self._client.get_entity(target)
+            entity = await _read(self._client.get_entity(target))
         except ValueError as exc:
             raise TelegramError(
                 "peer_not_found",
@@ -161,8 +180,8 @@ class TelethonGateway:
     async def history_page(
         self, peer_id: int, *, before: datetime, offset_id: int, limit: int
     ) -> Sequence[RawMessage]:
-        messages = await self._client.get_messages(
-            peer_id, limit=limit, offset_date=before, offset_id=offset_id
+        messages = await _read(
+            self._client.get_messages(peer_id, limit=limit, offset_date=before, offset_id=offset_id)
         )
         return [_raw(m) for m in messages]
 
@@ -214,7 +233,7 @@ class TelethonGateway:
         self, peer_id: int, since: datetime, until: datetime
     ) -> Sequence[OwnMessage]:
         """Власні (`out`) повідомлення каналу з датою в [since, until) — для звірки."""
-        messages = await self._client.get_messages(peer_id, limit=100, offset_date=until)
+        messages = await _read(self._client.get_messages(peer_id, limit=100, offset_date=until))
         result: list[OwnMessage] = []
         for message in messages:
             date = _utc(message.date)

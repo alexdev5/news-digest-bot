@@ -20,7 +20,7 @@ _WS = re.compile(r"\s+")
 
 @dataclass(frozen=True, slots=True)
 class Event:
-    """Одна новина випуску (D-025): емодзі, короткий заголовок, суть у 1–2 реченнях
+    """Одна новина випуску (D-025/D-032): емодзі, короткий заголовок, стислий виклад
     і всі джерельні дописи-учасники."""
 
     event_id: str
@@ -29,6 +29,15 @@ class Event:
     participants: tuple[SourceRef, ...]
     emoji: str = ""
     is_update: bool = False
+    layout: str = "detailed"
+    bullets: tuple[str, ...] = ()
+    quote: str = ""
+    quote_sources: tuple[SourceRef, ...] = ()
+
+    @property
+    def factual_summary(self) -> str:
+        """Published memory includes subevents, without optional editorial remarks."""
+        return "\n".join(filter(None, (self.summary, *self.bullets)))
 
     def __post_init__(self) -> None:
         if not self.participants:

@@ -9,6 +9,7 @@ from typing import Any, cast
 from sqlalchemy import Engine, Table, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from newsdigest.identity import MANUAL_KEY_PREFIX
 from newsdigest.storage.models import PublishedMessage
 
 _TABLE = cast(Table, PublishedMessage.__table__)
@@ -130,11 +131,13 @@ def used_message_ids(engine: Engine, destination_peer_id: int) -> set[int]:
 
 
 def last_published_window_end(engine: Engine, channel_id: str) -> datetime | None:
-    """Кінець вікна останнього опублікованого випуску каналу (D-029) або None."""
+    """Планове покриття (D-029), без довільних ручних вікон D-033, або None."""
     from sqlalchemy import func
 
     query = select(func.max(_TABLE.c.window_end_utc)).where(
-        _TABLE.c.target_channel_id == channel_id
+        _TABLE.c.target_channel_id == channel_id,
+        # Ad-hoc historical windows must not move the scheduled coverage frontier.
+        ~_TABLE.c.digest_key.startswith(MANUAL_KEY_PREFIX),
     )
     with engine.connect() as conn:
         value = conn.execute(query).scalar()

@@ -27,6 +27,10 @@ class FloodWaitPause(TelegramError):
         self.pause_until = pause_until
 
 
+class AccountUnavailable(TelegramError):
+    """Session/account failure: do not disguise it as one unavailable source."""
+
+
 @dataclass(frozen=True, slots=True)
 class ResolvedPeer:
     peer_id: int

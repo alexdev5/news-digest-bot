@@ -20,7 +20,7 @@ from newsdigest.telegram_refs import TelegramRef, TelegramRefError, parse_telegr
 ItemId = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9_]{0,63}$")]
 ReasoningEffort = Literal["none", "low", "medium", "high", "xhigh", "max"]
 
-DEFAULT_MODEL = "gpt-5.6-sol"
+DEFAULT_MODEL = "gpt-6.1-terra"
 DEFAULT_TIMEZONE = "Europe/Kyiv"
 DEFAULT_MISFIRE_GRACE_SECONDS = 10_800
 HEADER_FIELDS = frozenset({"name", "date", "time", "period"})

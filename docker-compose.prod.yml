@@ -49,6 +49,7 @@ services:
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
       TELEGRAM_API_ID_FILE: /run/secrets/telegram_api_id
       TELEGRAM_API_HASH_FILE: /run/secrets/telegram_api_hash
+      OPENAI_API_KEY_FILE: /run/secrets/openai_api_key
       NEWSDIGEST_STATE_DIR: /state
       NEWSDIGEST_CACHE_DIR: /cache
       NEWSDIGEST_SESSION_DIR: /session
@@ -71,6 +72,7 @@ services:
       - postgres_password
       - telegram_api_id
       - telegram_api_hash
+      - openai_api_key
     healthcheck:
       test: ["CMD", "digest", "healthcheck"]
       interval: 60s
@@ -87,6 +89,8 @@ secrets:
     file: ./secrets/telegram_api_id
   telegram_api_hash:
     file: ./secrets/telegram_api_hash
+  openai_api_key:
+    file: ./secrets/openai_api_key
 
 volumes:
   pgdata:

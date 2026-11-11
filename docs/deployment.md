@@ -91,7 +91,46 @@ Crypto-bot і його стек `postgres` не використовуються
 `… run --rm app digest scan --config /config/config.json --channel <id>` — теж
 лише при зупиненому worker.
 
-Секрет OpenAI додається в `secrets/` на етапі 4.
+## Ручний прогін (D-029)
+
+Сканує джерела, збирає випуск і **публікує** вікно від останньої публікації (або
+найближчої минулої межі) до поточного моменту:
+
+```bash
+docker compose -f docker-compose.prod.yml --profile worker exec app digest run-now --config /config/config.json --channel <id>
+```
+
+Якщо worker працює (звичайний стан), команда передає йому запит, і він виконає прогін
+протягом ~30 секунд; результат — у `digest status`. Локально: `.\run.cmd run-now --channel <id>`.
+
+## Публікація (етап 5)
+
+Коли worker запущено й задано ключ OpenAI, на кожній межі він: сканує → збирає
+випуск → **публікує в цільовий канал** → пише підтверджені частини в БД. Окремої
+команди «увімкнути публікацію» немає; `preview` ніколи не публікує.
+
+Якщо відповідь Telegram загубилась (`uncertain`), наступні частини й новіші випуски
+чекають. Звірка (worker треба зупинити):
+
+```bash
+docker compose -f docker-compose.prod.yml --profile worker stop app
+docker compose -f docker-compose.prod.yml --profile worker run --rm app digest reconcile --config /config/config.json --channel <id>
+docker compose -f docker-compose.prod.yml --profile worker up -d app
+```
+
+## OpenAI (етап 4)
+
+Ключ — у `secrets/openai_api_key` (порожня заготовка створюється автоматично):
+
+```bash
+ printf '%s' 'sk-…' > /srv/news-digest/secrets/openai_api_key
+chmod 0444 /srv/news-digest/secrets/openai_api_key
+```
+
+Пробіл на початку першої команди не дає ключу потрапити в історію bash.
+Перевірка без платної генерації (worker можна не зупиняти):
+`… exec app digest ai-check --config /config/config.json`. Після перезапуску
+worker (`… restart app`) кожен run після сканування збирає план (`status` → `ready`).
 
 ## Автодеплой (GitHub Actions, як у crypto-bot)
 

@@ -3,7 +3,7 @@
   "defaults": {
     "timezone": "Europe/Kyiv",
     "misfire_grace_seconds": 10800,
-    "ai": { "model": "gpt-5.6-sol", "reasoning_effort": "medium", "max_output_tokens": 8192 },
+    "ai": { "model": "gpt-6.1-terra", "reasoning_effort": "medium", "max_output_tokens": 8192 },
     "publication": { "max_chars_per_message": 3500, "link_preview": false }
   },
   "target_channels": [

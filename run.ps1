@@ -71,6 +71,10 @@ function Show-Help {
     Write-Host "  dialogs          List channels with IDs for the config"
     Write-Host "  doctor           Check session, sources and posting rights"
     Write-Host "  scan [args]      Manual scan of one window, e.g. scan --channel dnipro_news"
+    Write-Host "  preview [args]   Scan + build a digest without publishing: preview --channel <id>"
+    Write-Host "  ai-check         Check OPENAI_API_KEY and model access (no paid call)"
+    Write-Host "  reconcile [args] Check uncertain sends, resume series: reconcile --channel <id>"
+    Write-Host "  run-now [args]   Scan + AI + PUBLISH since last publication: run-now --channel <id>"
     Write-Host "  worker           Run the scheduler worker in the foreground"
     Write-Host "  status           Channel state, recent runs, heartbeat"
 }
@@ -169,6 +173,22 @@ switch ($Command) {
     "scan" {
         $ConfigPath = Get-ConfigPath
         Invoke-AppNoDb digest scan --config $ConfigPath @Rest
+    }
+    "preview" {
+        $ConfigPath = Get-ConfigPath
+        Invoke-App digest preview --config $ConfigPath @Rest
+    }
+    "ai-check" {
+        $ConfigPath = Get-ConfigPath
+        Invoke-AppNoDb digest ai-check --config $ConfigPath
+    }
+    "reconcile" {
+        $ConfigPath = Get-ConfigPath
+        Invoke-App digest reconcile --config $ConfigPath @Rest
+    }
+    "run-now" {
+        $ConfigPath = Get-ConfigPath
+        Invoke-App digest run-now --config $ConfigPath @Rest
     }
     "worker" {
         $ConfigPath = Get-ConfigPath

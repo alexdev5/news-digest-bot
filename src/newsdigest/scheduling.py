@@ -329,3 +329,19 @@ def apply_schedule_change(
         return active
     cutover = next_boundary_rev(active, now_utc)
     return (*active, Revision(new_trigger, cutover))
+
+
+def previous_boundary_rev(revisions: tuple[Revision, ...], before: datetime) -> datetime:
+    """Остання межа строго до `before` з урахуванням ревізій розкладу."""
+    _check_revisions(revisions)
+    before_utc = to_utc(before)
+    for index in range(len(revisions) - 1, -1, -1):
+        revision = revisions[index]
+        start = revision.effective_from
+        if start is not None and before_utc <= start:
+            continue
+        candidate = previous_boundary(revision.trigger, before_utc)
+        if start is not None and candidate <= start:
+            return start
+        return candidate
+    raise ScheduleError("не знайдено попередньої межі")  # pragma: no cover

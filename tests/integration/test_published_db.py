@@ -161,3 +161,65 @@ def test_downgrade_and_upgrade_again(migrated_url: URL) -> None:
     finally:
         engine.dispose()
         upgrade(migrated_url)
+
+
+def test_published_source_keys(pg_engine: Engine) -> None:
+    from newsdigest.storage.published_repo import published_source_keys
+
+    put(
+        pg_engine,
+        row(
+            1,
+            source_message_ids=[
+                {"type": "telegram", "peer_id": -1002, "message_id": 7},
+                {"type": "site", "url": "https://example.com/a"},
+                {"type": "unknown"},
+            ],
+        ),
+    )
+    put(pg_engine, row(2, message_id=101, target_channel_id="other"))
+    assert published_source_keys(pg_engine, "news") == {
+        ("telegram", -1002, 7),
+        ("site", "https://example.com/a"),
+    }
+    assert published_source_keys(pg_engine, "missing") == set()
+
+
+def test_insert_confirmed_part_is_idempotent(pg_engine: Engine) -> None:
+    from newsdigest.storage.published_repo import (
+        ConfirmedPart,
+        committed_part_keys,
+        insert_confirmed_part,
+        used_message_ids,
+    )
+
+    part = ConfirmedPart(
+        part_key=part_key(DIGEST, 1),
+        digest_key=DIGEST,
+        part_index=1,
+        part_count=1,
+        series_manifest_hash="m" * 64,
+        target_channel_id="news",
+        destination_peer_id=-1004402354838,
+        destination_message_id=77,
+        window_start_utc=WINDOW.start_utc,
+        window_end_utc=WINDOW.end_utc,
+        scheduled_at_utc=WINDOW.end_utc,
+        published_at_utc=WINDOW.end_utc,
+        confirmed_at_utc=WINDOW.end_utc,
+        confirmation_method="ack",
+        rendered_text="Новини",
+        entities=[{"type": "bold", "offset": 0, "length": 6}],
+        payload_hash="p" * 64,
+        random_id=123,
+        items=[{"title": "Подія", "short_summary": ""}],
+        source_message_ids=[{"type": "telegram", "peer_id": -1002, "message_id": 7}],
+        source_order_snapshot=["alpha"],
+        coverage_summary={"alpha": "complete"},
+        ai_usage_summary={"input": 10, "output": 5, "requests": 1},
+        usage_scope="series",
+    )
+    assert insert_confirmed_part(pg_engine, part) is True
+    assert insert_confirmed_part(pg_engine, part) is False
+    assert committed_part_keys(pg_engine, DIGEST) == {part.part_key}
+    assert used_message_ids(pg_engine, -1004402354838) == {77}

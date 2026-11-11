@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13,<3.14"
 dependencies = [
     "alembic>=1.14",
+    "openai>=1.60",
     "psycopg[binary]>=3.2",
     "pydantic>=2.9,<3",
     "qrcode>=7.4",

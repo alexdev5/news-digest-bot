@@ -25,6 +25,10 @@ rem   login      - interactive Telegram login; login --qr to scan a QR code
 rem   dialogs    - list channels with IDs for the config
 rem   doctor     - check session, sources and posting rights
 rem   scan       - manual scan of one window: scan --channel <id>
+rem   preview    - scan + build a digest without publishing: preview --channel <id>
+rem   ai-check   - check OPENAI_API_KEY and model access (no paid call)
+rem   reconcile  - check uncertain sends and resume series: reconcile --channel <id>
+rem   run-now    - scan + AI + PUBLISH since last publication: run-now --channel <id>
 rem   worker     - run the scheduler worker in the foreground
 rem   status     - channel state, recent runs, heartbeat
 rem

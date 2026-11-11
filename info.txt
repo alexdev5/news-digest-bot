@@ -1,0 +1,20 @@
+0. copy to server
+scp config/config.json root@187.127.94.74:/srv/news-digest/config/config.json
+
+1. Перевірка сесії, джерел і права публікації (історію каналів не читає):
+docker compose -f docker-compose.prod.yml --profile worker run --rm app digest doctor --config /config/config.json
+
+2. Запуск worker:
+bash deploy/deploy.sh
+
+3. Перевірка, що worker живий:
+docker compose -f docker-compose.prod.yml --profile worker ps
+
+4. Стан каналу:
+docker compose -f docker-compose.prod.yml --profile worker exec app digest status --config /config/config.json
+
+5. Логи worker, якщо треба:
+docker compose -f docker-compose.prod.yml --profile worker logs -f --tail=50 app
+
+6. Перезапустити воркер
+docker compose -f docker-compose.prod.yml --profile worker restart app

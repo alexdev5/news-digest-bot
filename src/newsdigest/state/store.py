@@ -22,7 +22,19 @@ MAX_RUN_HISTORY = 60
 MAX_SKIPPED_HISTORY = 60
 MAX_REVISIONS = 3
 
-RunStatus = Literal["materialized", "scanning", "scanned", "failed", "cache_expired"]
+RunStatus = Literal[
+    "materialized",
+    "scanning",
+    "scanned",
+    "ready",
+    "published",
+    "partial",
+    "uncertain",
+    "held",
+    "failed",
+    "cache_expired",
+]
+GuardPhase = Literal["prepared", "sending", "confirmed", "committed", "uncertain"]
 CoverageStatus = Literal["pending", "complete", "partial", "unavailable", "excluded"]
 
 
@@ -96,6 +108,9 @@ class RunRecord(StateModel):
     error_code: str | None = None
     coverage: dict[str, SourceCoverage] = Field(default_factory=dict)
     excluded: dict[str, int] = Field(default_factory=dict)
+    events: int | None = None
+    parts: int | None = None
+    ai_tokens: dict[str, int] = Field(default_factory=dict)
 
 
 class ChannelState(StateModel):
@@ -151,6 +166,50 @@ class RateLimitState(StateModel):
     reason: str | None = None
 
 
+class DeliveryGuard(StateModel):
+    """Безконтентний захист від повторної відправки частини (v4 §14, architecture.md).
+
+    Фази: prepared → sending → confirmed → committed; невідомий результат send →
+    uncertain (далі лише звірка). Текстів тут немає: лише ключі, hash, random_id, час.
+    """
+
+    part_key: str
+    digest_key: str
+    channel_id: str
+    destination_peer_id: int
+    part_index: int
+    part_count: int
+    manifest_hash: str
+    payload_hash: str
+    random_id: int
+    phase: GuardPhase
+    updated_at_utc: AwareDatetime
+    sending_at_utc: AwareDatetime | None = None
+    message_id: int | None = None
+    message_date_utc: AwareDatetime | None = None
+    confirmation_method: Literal["ack", "reconciled"] | None = None
+    error_code: str | None = None
+
+
+class GuardsState(StateModel):
+    schema_version: Literal[1] = 1
+    guards: dict[str, DeliveryGuard] = Field(default_factory=dict)
+
+    def unresolved(self, channel_id: str | None = None) -> list[DeliveryGuard]:
+        return [
+            g
+            for g in self.guards.values()
+            if g.phase != "committed" and (channel_id is None or g.channel_id == channel_id)
+        ]
+
+
+class ManualRequest(StateModel):
+    """Запит ручного прогону від CLI для запущеного worker (D-029)."""
+
+    channel_id: str
+    requested_at_utc: AwareDatetime
+
+
 class Heartbeat(StateModel):
     at_utc: AwareDatetime
     pid: int
@@ -195,6 +254,39 @@ class StateStore:
 
     def save_rate_limits(self, state: RateLimitState) -> None:
         self._save("rate_limits.json", state)
+
+    def load_guards(self) -> GuardsState:
+        return self._load("delivery_guards.json", GuardsState, GuardsState())
+
+    def save_guards(self, state: GuardsState) -> None:
+        self._save("delivery_guards.json", state)
+
+    @property
+    def requests_dir(self) -> Path:
+        return self.directory / "requests"
+
+    def request_manual_run(self, channel_id: str, at: datetime) -> Path:
+        """Запис запиту окремим файлом: CLI не чіпає файли стану, якими володіє worker."""
+        path = self.requests_dir / f"manual-{channel_id}.json"
+        write_json_atomic(
+            path, ManualRequest(channel_id=channel_id, requested_at_utc=at).model_dump(mode="json")
+        )
+        return path
+
+    def take_manual_requests(self) -> list[ManualRequest]:
+        """Забирає (і видаляє) запити ручного прогону. Пошкоджені файли відкидаються."""
+        result: list[ManualRequest] = []
+        if not self.requests_dir.exists():
+            return result
+        for path in sorted(self.requests_dir.glob("manual-*.json")):
+            try:
+                data = read_json_checked(path)
+                if data is not None:
+                    result.append(ManualRequest.model_validate(data))
+            except (StateCorruptError, ValidationError):
+                pass
+            path.unlink(missing_ok=True)
+        return result
 
     def load_heartbeat(self) -> Heartbeat | None:
         return self._load_optional("heartbeat.json", Heartbeat)

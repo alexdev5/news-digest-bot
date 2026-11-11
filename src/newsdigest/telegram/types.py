@@ -57,6 +57,24 @@ class RawMessage:
 
 
 @dataclass(frozen=True, slots=True)
+class SentMessage:
+    """Підтвердження відправки: ID повідомлення в каналі й серверний час."""
+
+    message_id: int
+    date_utc: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class OwnMessage:
+    message_id: int
+    date_utc: datetime
+
+
+class SendRejected(TelegramError):
+    """Telegram однозначно відхилив send (повідомлення НЕ надіслано)."""
+
+
+@dataclass(frozen=True, slots=True)
 class AccountInfo:
     account_id: int
     is_bot: bool
@@ -84,3 +102,15 @@ class TelegramGateway(Protocol):
     ) -> Sequence[RawMessage]: ...
 
     async def dialogs(self) -> Sequence[DialogInfo]: ...
+
+    async def send_message(
+        self,
+        peer_id: int,
+        text: str,
+        entities: Sequence[dict[str, object]],
+        random_id: int,
+    ) -> SentMessage: ...
+
+    async def own_messages(
+        self, peer_id: int, since: datetime, until: datetime
+    ) -> Sequence[OwnMessage]: ...

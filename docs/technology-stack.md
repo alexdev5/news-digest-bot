@@ -16,7 +16,7 @@ ruff 0.17.4, mypy 2.4.1; telethon 1.45.0 (етап 2). openai та бібліо�
 | Мова | Python 3.13 | Задана в початковому ТЗ версія |
 | Асинхронний runtime | asyncio | Мережеві виклики, черги й планувальник без блокування event loop |
 | Telegram | Telethon 1.x, MTProto | Вхід звичайним акаунтом, історія каналів, send і reconciliation |
-| AI | Офіційний `openai` Python SDK, `AsyncOpenAI`, Responses API | `gpt-5.6-sol`, structured events/claims та короткий огляд |
+| AI | Офіційний `openai` Python SDK, `AsyncOpenAI`, Responses API | `gpt-6.1-terra`, structured events/claims та короткий огляд |
 | Схеми | Pydantic 2.x, JSON Schema | Config/state/cache/API-result validation, unknown fields заборонені |
 | Конфігурація | Стандартний `json` (`object_pairs_hook` для заборони дублікатів) + Pydantic | JSON schema 4 з `target_channels` (D-021); у майбутньому — та сама модель із БД |
 | Сайти: HTTP | `httpx` (async) | Завантаження RSS/сторінок/статей із таймаутами, лімітами розміру й контролем redirect |
@@ -77,7 +77,7 @@ pipeline перевірок не повинен залежати від конк
 | Цільові канали, їхні Telegram-джерела й сайти | Реальний конфіг; O-001, O-009 |
 | Остаточні розклади | У ТЗ є можливості й шаблони, але приклади не є готовим production-config |
 | Контрольований Telegram-акаунт, API credentials | Первинна авторизація; секрети вводяться локально |
-| OpenAI key (є у власника), доступ до моделі | Реальні AI-виклики; доступ ключа до `gpt-5.6-sol` ще не перевірено |
+| OpenAI key (є у власника), доступ до моделі | Реальні AI-виклики; доступ ключа до `gpt-6.1-terra` ще не перевірено |
 | Budget caps на випуск/день/місяць | Контроль витрат; O-003 |
 | Промпти цільових каналів | Стиль і тематика кожного каналу; O-010 |
 | Невелика добірка прикладів з очікуваним результатом | Перевірка злиття, оновлень, джерел і стилю; O-005 |

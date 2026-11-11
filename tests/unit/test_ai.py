@@ -277,3 +277,11 @@ def test_date_parts_count_as_source_numbers() -> None:
     }
     problems, covered = validate(answer, candidates)
     assert problems == [] and covered == {"d1"}
+
+
+def test_channel_attribution_rejected_d030() -> None:
+    bad = json.loads(json.dumps(GOOD))
+    bad["events"][1]["summary"] = "За даними «Alpha», призначили додаткові рейси."
+    problems, covered = validate(bad, CANDIDATES)
+    assert any("не згадуй канали" in p and "Alpha" in p for p in problems)
+    assert "c4" not in covered

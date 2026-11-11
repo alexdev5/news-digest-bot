@@ -23,7 +23,7 @@ ReasoningEffort = Literal["none", "low", "medium", "high", "xhigh", "max"]
 DEFAULT_MODEL = "gpt-6.1-terra"
 DEFAULT_TIMEZONE = "Europe/Kyiv"
 DEFAULT_MISFIRE_GRACE_SECONDS = 10_800
-HEADER_FIELDS = frozenset({"name", "date", "time", "period"})
+HEADER_FIELDS = frozenset({"name", "date", "date_long", "time", "period"})
 
 _HHMM_RE = re.compile(r"^([01][0-9]|2[0-3]):[0-5][0-9]$")
 
@@ -213,7 +213,7 @@ class Filters(StrictModel):
 
 
 class Format(StrictModel):
-    header: str = Field("{name} · {date} {time}", min_length=1, max_length=200)
+    header: str = Field("{date_long}", min_length=1, max_length=200)
 
     @field_validator("header")
     @classmethod

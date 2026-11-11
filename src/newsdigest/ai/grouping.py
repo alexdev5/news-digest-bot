@@ -162,6 +162,7 @@ def review(data: dict[str, Any], batch: Sequence[Candidate]) -> Review:
     """Перевіряє відповідь. Одна погана подія не скасовує решту придатних."""
     by_id = {c.candidate_id: c for c in batch}
     result = Review()
+    channel_names = {r.label for c in batch for r in c.refs if len(r.label) >= 4}
     events = data.get("events")
     excluded = data.get("excluded")
     if not isinstance(events, list) or not isinstance(excluded, list):
@@ -204,6 +205,13 @@ def review(data: dict[str, Any], batch: Sequence[Candidate]) -> Review:
             issues.append(
                 f"{label}: числа {sorted(missing)} відсутні в текстах джерел — "
                 "напиши їх точно як у джерелі або прибери"
+            )
+        text = f"{title} {summary}".casefold()
+        named = sorted(name for name in channel_names if name.casefold() in text)
+        if named:
+            issues.append(
+                f"{label}: не згадуй канали-джерела ({', '.join(named)}) — посилання на "
+                "джерело додається автоматично"
             )
         if issues:
             result.bad_events.append((event, issues))

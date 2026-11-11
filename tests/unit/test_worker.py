@@ -298,7 +298,7 @@ async def test_ai_builds_ready_plan(tmp_path: Path) -> None:
     plan = json.loads(
         (h.cache.run(run.digest_key).directory / "plan.json").read_text(encoding="utf-8")
     )["data"]
-    assert plan["parts"][0]["text"].startswith("Новини · 10.11 21:00")
+    assert plan["parts"][0]["text"].startswith("10 листопада\n\n1. ")
 
 
 async def test_without_ai_key_no_plan_d011(tmp_path: Path) -> None:

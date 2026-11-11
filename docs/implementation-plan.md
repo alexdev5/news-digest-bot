@@ -180,6 +180,8 @@ schema, `all_unique` та per-part uniqueness проходять на синте
 - `ai/prompts.py`: версіоновані системні інструкції англійською (`group-v2`) і strict JSON Schema:
   події (`candidate_ids`, emoji, title, summary, is_update) + `excluded` з причинами
   ad/off_topic/not_news/repeat_without_news. Промпт каналу — лише доповнення.
+- D-030: промпт `group-v3` (без згадок каналів-джерел, перевірка в `review`), поле
+  заголовка `{date_long}` («11 листопада»), default `format.header` = `{date_long}`.
 - `ai/provider.py`: офіційний SDK `openai` (AsyncOpenAI, Responses API), `store=false`,
   `stream=false`, без tools, `reasoning.effort` і модель із конфігу; refusal/incomplete/
   невалідний JSON → `AiError`; коди помилок API (rate_limit vs insufficient_quota тощо).

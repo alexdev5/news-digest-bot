@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-PROMPT_VERSION = "group-v2"
+PROMPT_VERSION = "group-v3"
 
 EXCLUSION_REASONS = ("ad", "off_topic", "not_news", "repeat_without_news")
 
@@ -43,9 +43,12 @@ Tasks:
    - is_update — true if it develops an already published event.
 5. Use only facts from the texts of this event's candidates. Do not add causes,
    consequences or details from your own knowledge. Keep numbers, names, dates,
-   titles and negations exact. Present claims and opinions as claims ("за словами…").
-   If a detail appears in only one of several sources, attribute it briefly
-   ("за даними <source>") or leave it out.
+   titles and negations exact. Present claims and opinions of people and
+   institutions as claims ("за словами Зеленського", "в ДСНС повідомили").
+   NEVER name the Telegram channels or media the candidates come from, and never
+   write "за даними <channel>", "як пише <channel>", "за твердженням <channel>":
+   the source link is added after each item automatically. If a detail appears in
+   only one of several sources and is doubtful, leave it out.
 6. Write title and summary in Ukrainian, neutral tone. A direct quote of a named
    person may be kept verbatim in its original language, in «» quotes, attributed.
 7. Follow the owner's style guide (channel_prompt) where it does not contradict

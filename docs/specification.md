@@ -239,7 +239,7 @@ OpenAI Responses API, за замовчуванням `model=gpt-6.1-terra`,
       ],
       "ai": { "prompt_file": "prompts/news-ua.md" },
       "filters": { "exclude_patterns": ["реклама", "розіграш"] },
-      "format": { "header": "{name} · {date} {time}" },
+      "format": { "header": "{date_long}" },
       "daily_budget_usd": 1.0
     }
   ]
@@ -261,7 +261,10 @@ OpenAI Responses API, за замовчуванням `model=gpt-6.1-terra`,
 - Сайт потребує `rss` або `selectors` (`item` — обов'язковий CSS-селектор посилань
   на статті; `title`, `date`, `content` — необов'язкові).
 - `filters.exclude_patterns` — підрядки без урахування регістру, не regex.
-- `format.header` дозволяє лише поля `{name}`, `{date}`, `{time}`, `{period}`.
+- `format.header` дозволяє лише поля `{name}`, `{date}`, `{date_long}`, `{time}`, `{period}`.
+  За замовчуванням `{date_long}` — «11 листопада» (D-030).
+- У тексті пунктів не згадуються канали/медіа-джерела («за даними …») — посилання
+  на джерело стоїть у кінці пункту (D-030).
 - `prompt_file` — шлях відносно теки конфігу й лише всередині неї.
 - Цільовий канал не може бути джерелом жодного цільового каналу; цільові канали різні.
 - Секрети в конфігу заборонені; шляхи до secret files задаються окремо в

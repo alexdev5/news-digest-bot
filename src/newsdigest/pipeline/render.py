@@ -27,6 +27,20 @@ from newsdigest.pipeline.events import Event, visible_source
 
 ITEM_SEPARATOR = "\n\n"
 UPDATE_PREFIX = "Оновлення: "
+MONTHS_GENITIVE = (
+    "січня",
+    "лютого",
+    "березня",
+    "квітня",
+    "травня",
+    "червня",
+    "липня",
+    "серпня",
+    "вересня",
+    "жовтня",
+    "листопада",
+    "грудня",
+)
 MAX_PACKING_ROUNDS = 20
 
 
@@ -141,6 +155,7 @@ class Header:
         line = self.template.format(
             name=self.name,
             date=f"{end:%d.%m}",
+            date_long=f"{end.day} {MONTHS_GENITIVE[end.month - 1]}",
             time=f"{end:%H:%M}",
             period=f"{start:%d.%m %H:%M} — {end:%d.%m %H:%M}",
         )

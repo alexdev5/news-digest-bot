@@ -18,8 +18,10 @@ facts and the JSON format follow the system instructions.
   changes for people.
 - A second sentence only if it adds a new fact (status, next step, official source).
 - Numbers as digits, units as usual in Ukrainian media: "3 громади", "15:30", "120 т".
-- Attribute claims: "за словами голови ОВА", "повідомили в ДСНС". Avoid empty filler
-  such as "стало відомо", "повідомляють", "як зазначається".
+- Attribute claims to people or institutions: "за словами голови ОВА", "повідомили в
+  ДСНС". Never mention Telegram channels or media as sources ("за даними «…»",
+  "за твердженням «…»", "як пише …") — the source link is already at the end of the item.
+- Avoid empty filler such as "стало відомо", "повідомляють", "як зазначається".
 - Leave out the summary (empty string) if the headline already says everything.
 
 ## Direct quotes

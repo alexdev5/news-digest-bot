@@ -317,3 +317,9 @@ async def test_build_digest_end_to_end_draft() -> None:
 async def test_build_digest_without_news_has_no_parts() -> None:
     built = await build_digest(channel(), WINDOW, KYIV, 3500, [])
     assert built.plan.parts == ()
+
+
+def test_header_date_long_d030() -> None:
+    header = Header("{date_long}", "Новини", START, END, KYIV)
+    assert header.render(1, 1) == "11 листопада"
+    assert header.render(2, 3) == "11 листопада · Частина 2/3"

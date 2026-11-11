@@ -31,7 +31,7 @@
       ],
       "ai": { "prompt_file": "prompts/news-ua.md" },
       "filters": { "exclude_patterns": ["реклама", "розіграш"] },
-      "format": { "header": "{name} · {date} {time}" },
+      "format": { "header": "{date_long}" },
       "daily_budget_usd": 1.0
     },
     {
@@ -57,7 +57,7 @@
       ],
       "ai": { "prompt": "Пиши стисло, без порад купувати чи продавати." },
       "filters": { "exclude_patterns": [] },
-      "format": { "header": "{name} · {period}" },
+      "format": { "header": "{date_long}" },
       "daily_budget_usd": null
     }
   ]

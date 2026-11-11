@@ -4,16 +4,20 @@
 Модулі й моделі нижче потрібно реалізувати; наявність цього опису не означає,
 що в репозиторії вже є відповідні класи або міграції.
 
+Термін «профіль» у цьому документі = **цільовий канал** (`target_channels[i]`),
+`profile_id` = його `id`. Рішення D-010–D-021 від 2026-11-11 — у [decisions.md](decisions.md).
+
 ## Межі відповідальності
 
 | Модуль | Вхід / результат | Заборонена відповідальність |
 | --- | --- | --- |
-| config / resolver | Валідована конфігурація, pinned peers, immutable snapshot | Прихована зміна peer або сортування `source_ids` |
-| scheduler / windows | Планова межа → `RunIdentity` та `[start,end)` | Читання джерел або генерація контенту |
-| history_scanner | Вікно + sources → cache records і coverage | Insert у БД публікацій, фоновий ingestion |
+| config / resolver | Валідований JSON-конфіг (schema 4), pinned peers, immutable snapshot | Прихована зміна peer, сортування джерел, секрети в конфігу |
+| scheduler / windows | Планова межа + `scan_start_at` → `RunIdentity` та `[start,end)` | Читання джерел або генерація контенту |
+| history_scanner | Вікно + `source_channels` → cache records і coverage | Insert у БД публікацій, фоновий ingestion |
+| web_scanner | Вікно + `source_sites` → очищені статті в кеші й coverage | Доступ поза налаштованими доменами, фонове опитування, архів сторінок |
 | cache | JSON/JSONL, manifests, cursors, TTL, shared refs | Постійний архів або backup raw |
 | pipeline / AI | Snapshot + published memory → валідовані унікальні події | Вибір destination, вільний доступ до інструментів |
-| attribution | Подія + ordered sources → visible source/message | Вибір за популярністю або перевагою LLM |
+| attribution | Подія + учасники з часом публікації → найраніший допис (D-015) | Вибір за популярністю або перевагою LLM |
 | renderer / splitter | Події → весь `PublicationPlan` із text/entities | Мережевий I/O або відкидання подій за довжиною серії |
 | publisher | Незмінна частина → confirmed receipt / uncertain | Новий текст на retry або запис непідтвердженого як published |
 | published_repository | `ConfirmedPart` → транзакційний insert | Raw, drafts, failed runs або pending outbox |
@@ -26,11 +30,12 @@ socket; offline login використовує той самий ексклюз�
 ## Моделі й ідентичність
 
 - `RunIdentity`: profile ID, UTC start/end, незмінний config/schedule snapshot.
-- `SourceMessage`: peer/message/version refs і текст тільки в кеші.
+- `SourceMessage`: тип джерела (`telegram`/`site`), source ID, peer/message або
+  канонічний URL статті, час публікації, version refs; текст тільки в кеші.
 - `ValidatedEvent`: власний короткий виклад, claims/evidence refs, attribution,
   is_update; до підтвердженої публікації теж тільки в кеші.
 - `PublicationPlan`: впорядкований повний список частин і hash manifest.
-- `OutgoingPart`: part index/count, text/entities, marker, payload hash, random ID.
+- `OutgoingPart`: part index/count, text/entities, payload hash, random ID.
 - `ConfirmedPart`: фактичний Telegram message ID/server time та metadata пунктів.
 
 `digest_key` — hash канонічного набору `(profile_id, start_utc, end_utc)`.
@@ -45,10 +50,13 @@ Snapshot відкритого вікна закріплюється на йог�
 Reload зберігає pending revision до cutover; негайні заборони прав/вимкнення
 перевіряються поверх snapshot. Цей state не містить джерельного контенту.
 
-Marker містить профіль, cutoff, короткий digest hash та `p<index>of<count>`.
-Максимальна довжина, кодування profile ID й версія marker мають бути визначені
-в renderer schema. Зіставляти marker разом із pinned destination та payload hash,
-не лише за збігом підрядка. Сторонні пости з таким текстом не вважати своїми.
+Видимого marker/hashtag у тексті поста немає (D-014). Ідентичність частини —
+`part_key`, payload hash і random ID у `/state` та БД. Звірка невизначеної відправки
+(D-017): у pinned цільовому каналі шукати власні пости акаунта з датою в інтервалі
+`[sending_at − δ, sending_at + Δ]` (δ — допуск годинника, Δ — таймаут send + запас;
+конкретні значення визначаються в конфігу реалізації). Рівно один кандидат, ID якого
+ще не зайнятий іншою частиною в БД/guards, → `confirmed` з `confirmation_method=reconciled`;
+інакше `uncertain`. Текст не порівнюється. Сторонні пости (не від акаунта) не вважаються своїми.
 
 ## Робота з Telegram
 
@@ -66,6 +74,20 @@ coverage і порядок. Cursor оновлюється тільки післ�
 Якщо convenience helper генерує новий ID, потрібен нижчий рівень API.
 Правило не покладається лише на серверну дедуплікацію: є власні guards і звірка.
 
+## Робота з сайтами
+
+Для `source_sites` на межі вікна: RSS/Atom (`rss`) або сторінка-список (`url` +
+`selectors`) → посилання на статті з датою в `[start,end)` → завантаження статей →
+очищення HTML до тексту → запис у кеш як `SourceMessage` типу `site`. Статті без
+надійної дати не включаються. Канонічний URL статті — її ID для дедуплікації
+й `source_message_ids`.
+
+Мережеві обмеження: тільки домени налаштованих сайтів; перевірка redirect і DNS;
+блокування localhost, приватних/link-local IP, metadata endpoints, `file://` та
+інших схем, крім `http/https`; ліміти розміру відповіді, кількості статей і часу.
+Посилання з тексту статей не є довіреними адресами для завантаження. Між вікнами
+сайти не опитуються. Coverage сайту: `complete`/`partial`/`unavailable`, як у Telegram.
+
 ## Побудова серії
 
 Семантичне групування виконує AI: повідомлення зі спільною подією можуть мати
@@ -74,11 +96,14 @@ provenance копій; near-text score лише формує кандидаті�
 Не видаляти додаткові факти до аналізу моделлю. При міжпачковому group зберігати
 claims і source refs, щоб нові деталі не зникали за схожим коротким заголовком.
 
-1. Завершити scan і зафіксувати snapshot; перевірити потрібний coverage.
+1. Завершити scan (Telegram і сайти) і зафіксувати snapshot; записати coverage.
+   Відкинути записи, ID яких уже є в `source_message_ids` цього цільового каналу (D-012).
+   Нуль придатних записів → результат `empty`, публікації немає.
 2. Обробити всі придатні записи пачками; виконати міжпачкове group/deduplicate.
 3. Відокремити повтори published facts, не виключаючи розвиток події.
-4. Для кожної події обрати visible source, сформувати валідний пункт.
-5. Впорядкувати події детерміновано; однакові оцінки мають стабільний tie-break.
+4. Для кожної події обрати visible source (найраніший допис групи, D-015), сформувати пункт.
+5. Впорядкувати події за зростанням часу найновішого допису групи (D-016);
+   рівний час — стабільний tie-break за ID події.
 6. Упакувати цілі пункти в частини, перерахувати N і заголовки до стабільного результату.
 7. Перевірити, що кожна прийнята подія є рівно в одній частині; сформувати
    `PublicationPlan`, hashes і всі random IDs. Надійно записати план у `/cache`.
@@ -95,10 +120,13 @@ restart можуть змінитися кількість частин, нум�
 Успішні перші частини не очікують доставки всієї серії для insert.
 
 Збережені поля v4: publication/profile/destination IDs, window/scheduled times,
-published/confirmed times, confirmation method, text/entities, marker/hash/random ID,
+published/confirmed times, confirmation method, text/entities, payload hash/random ID,
 config/schedule/source-order snapshot, items, coverage/usage та recovery completeness.
 
-Доповнення: `part_key`, `part_index`, `part_count`, `series_manifest_hash`.
+Доповнення: `part_key`, `part_index`, `part_count`, `series_manifest_hash`,
+`source_message_ids` (D-014) — JSON-масив ID джерельних записів, використаних у
+пунктах частини: `{"type":"telegram","peer_id":…,"message_id":…}` або
+`{"type":"site","url":"…"}`. Поле `marker` v4 не використовується.
 Обмеження нової схеми:
 
 ```text
@@ -128,8 +156,9 @@ Run-level usage у частинах не дублюється як N незал�
 ## Стани та доставка частин
 
 Технічні стани run у `/state`: `materialized`, `scanning`, `processing`,
-`ready`, `publishing`, `partial`, `complete`, `failed`, `skipped`,
-`cache_expired`, `needs_review`. Preview має окремий terminal result.
+`ready`, `publishing`, `partial`, `complete`, `empty`, `failed`, `skipped`,
+`cache_expired`, `needs_review`. `empty` — немає придатних новин, нічого не надіслано (D-012).
+Неповний scan не блокує публікацію прочитаного (D-019); coverage пишеться в `/state`. Preview має окремий terminal result.
 Не зберігати їх як непідтверджені рядки контентної БД.
 
 Guard частини: `prepared → sending → confirmed → committed`.
@@ -158,7 +187,7 @@ Guard частини: `prepared → sending → confirmed → committed`.
 | Частина k uncertain | Звірити саме її; не надсилати k+1 або новіший випуск |
 | Ack є, DB commit не вдався | Відновити confirmed insert за receipt/reconciliation |
 | Після початку серії кеш втрачено/TTL минув | Hold; звірити відправлене, не генерувати іншу решту автоматично |
-| Права відкликані під час серії | Зупинити unsent частини, очистити відповідний кеш; committed не приховувати |
+| Джерело вимкнене під час серії | Уже підготовлений план не переформатовується; нові вікна без цього джерела |
 | Відновлено старий backup | Hold; звірити destinations, guards, БД та budget state до нових sends |
 
 Telegram-серія не є атомарною транзакцією. Автоматичний rollback видаленням

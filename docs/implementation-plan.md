@@ -12,11 +12,13 @@
   uv/uv.lock, Typer, pytest/pytest-asyncio, Ruff і mypy за
   [technology-stack.md](technology-stack.md). Налаштування й виконувані команди
   перевірок додаються разом із каркасом, не вважаються вже наявними.
-- Pydantic-моделі config schema 4, strict JSON schemas, duplicate-key-safe YAML.
-- `config/config.example.yml`, versioned state/manifest/confirmed-part schemas.
+- Pydantic-моделі JSON config schema 4 (`defaults`, `target_channels`,
+  `source_channels`, `source_sites`), заборона невідомих полів і дублікатів ключів.
+- `config/config.example.json`, versioned state/manifest/confirmed-part schemas.
 - Публічні enums errors/statuses, exit codes, schema compatibility policy.
-- Чиста логіка schedule/windows/DST/cutover й config precedence.
-- Порожня confirmed-only SQLite-схема з підтримкою N частин і nullable recovery metadata.
+- Чиста логіка schedule/windows/DST/cutover, `scan_start_at` і успадкування `defaults`.
+- Порожня confirmed-only SQLite-схема з підтримкою N частин, `source_message_ids`
+  і nullable recovery metadata.
 
 Приймання: offline validation не звертається до Telegram/OpenAI; тести вікон,
 schema, `all_unique` та per-part uniqueness проходять на синтетичних даних.
@@ -36,17 +38,31 @@ schema, `all_unique` та per-part uniqueness проходять на синте
 Приймання: немає фонового scan; alias не множить coverage; crash між записом
 сторінки й cursor не губить дані; TTL не видаляє unresolved guard.
 
+## 2a. Сайти як джерела (D-020)
+
+Результат:
+
+- web_scanner: RSS/Atom або сторінка-список + `selectors`, відбір статей за
+  `[start,end)`, очищення HTML до тексту, запис у кеш як `SourceMessage`.
+- SSRF-захист, ліміти розміру/часу/кількості, coverage сайту.
+- Офлайн-тести на збережених синтетичних HTML/RSS fixtures.
+
+Приймання: недозволені домени/IP/схеми блокуються; статті без дати не включаються;
+між вікнами немає HTTP-запитів до сайтів.
+
 ## 3. Події, attribution і серія повідомлень
 
 Результат:
 
-- Фільтри, точна/наближена дедуплікація, rule-based pipeline, published-memory.
-- Ordered-source attribution, побудова message URLs і UTF-16 entities.
+- Фільтри, точна/наближена дедуплікація, пропуск уже опублікованих ID, published-memory.
+- Attribution «найраніший допис групи» (D-015), message/article URLs і UTF-16 entities.
+- Хронологічне впорядкування пунктів (D-016).
 - Повний `PublicationPlan`, packing цілих пунктів, стабільні `i/N` і hashes.
 - Окремі `preview` і `prepare`, облік кожної прийнятої події у всіх частинах.
 
 Приймання: жодного top-N; усі прийняті події представлені рівно раз; довжина
-кожної частини коректна разом із header/footer; порядок джерел детермінований.
+кожної частини коректна разом із header; вибір посилання й порядок детерміновані;
+порожній результат нічого не публікує.
 
 ## 4. OpenAI та оцінка якості
 
@@ -56,7 +72,8 @@ schema, `all_unique` та per-part uniqueness проходять на синте
   grounded claims, перевірка refs/evidence, відсутність tools.
 - Batching і міжпачкове злиття без втрати подій; versioned temporary AI cache.
 - Чинна тарифна таблиця з expiry, atomic reservations, budgets і unknown usage.
-- Один retry controller поверх SDK; refusal/incomplete/fallback із явними statuses.
+- Промпт цільового каналу поверх системних інструкцій; per-channel model override.
+- Один retry controller поверх SDK; refusal/incomplete → випуск не публікується, alert (D-011).
 - Розмічений дозволений/синтетичний корпус і звіт метрик якості.
 
 Приймання: офлайн mock-контракти проходять. Явний live `ai-check --probe`
@@ -68,7 +85,7 @@ schema, `all_unique` та per-part uniqueness проходять на синте
 
 - Перевірений raw MTProto send зі збереженим random ID, per-part guards/receipts.
 - Confirmed-only insert, resume непідтвердженої частини, hold для uncertain.
-- Reconciliation за marker/hash/peer; restore частин із partial metadata.
+- Reconciliation за часом публікації в pinned цільовому каналі (D-017); restore частин із partial metadata.
 - Cleanup після N commits, TTL із зупиненням активних читачів.
 - Узгоджений backup без raw/cache/session; restore hold і budget recovery.
 
@@ -82,8 +99,8 @@ schema, `all_unique` та per-part uniqueness проходять на синте
 - Non-root/read-only Docker image, Compose secrets, окремі data/cache/state/session,
   локальний control socket, SIGTERM, healthcheck без зовнішніх викликів.
 - CI для офлайн-перевірок; синтетичні fixtures; захист build context від secrets/cache.
-- Навантажувальний звіт: 50 джерел, 5 профілів, до 10 000 постів/добу,
-  одночасні й різні межі, first/last part delays, coverage і витрати.
+- Звіт вимірів на реальному обсязі (~50 вхідних дописів/добу на канал, D-018):
+  затримка, coverage і витрати.
 - 7 днів тестового прогону в каналах власника, backup/restore rehearsal,
   заповнений operations runbook із фактичними командами й результатами.
 
@@ -94,8 +111,10 @@ schema, `all_unique` та per-part uniqueness проходять на синте
 
 Не додавати always-on collector як тимчасове production-рішення. Розробка
 доставки має спиратися на модель частин із першого етапу, а не на стару UNIQUE
-схему одного поста. Стару schema 2→3 реалізовувати лише за наявності реального
-legacy-конфіга; у поточному workspace таких даних не виявлено.
+схему одного поста. Міграції YAML schema 2→3→4 не реалізуються: legacy-конфігів
+немає, конфіг одразу JSON schema 4 (D-021).
+
+Після кожного етапу оновлювати цей документ і [context.md](context.md).
 
 Функціональні зміни супроводжувати відповідною документацією в `docs/`.
 Для документаційної правки не створювати дзеркальні unit-тести тексту.

@@ -35,3 +35,13 @@ backend/.audit_cache/
 
 # Local file-backed market history and backtest artifacts
 /historical_data/
+
+# NewsDigest runtime data and secrets
+/secrets/
+/session/
+/cache/
+/data/
+/state/
+*.session
+*.session-journal
+/config/config.json

@@ -6,8 +6,9 @@
 
 ## Дані для середовища
 
-Підготувати account ID, source refs і порядок, destinations/pinned peer IDs,
-права на читання/публікацію/AI, розклад кожного профілю, budgets та чинні тарифи.
+Підготувати `config/config.json` (schema 4, `target_channels`): цільові канали,
+їхні Telegram-джерела й сайти, `scan_start_at`, розклади, промпти, budgets і чинні
+тарифи; account ID і pinned peer IDs. Окремий реєстр прав не потрібен (D-010).
 Telegram API credentials і OpenAI key зберігаються у secret files, session — окремо.
 Коди входу/2FA пароль не залишаються в конфігурації або документації.
 
@@ -26,7 +27,7 @@ Production target: один Linux Docker host, один non-root worker, local s
 2. Із зупиненим worker: `login` під спільним process lock; перевірити account ID.
 3. Запустити worker у preview mode; `doctor`, `dialogs`, `schedule --all`.
 4. `ai-check`; `--probe` — окремий явний синтетичний виклик у межах бюджету.
-5. Перевірити ручний/плановий `preview`: всі події, source order, поділ, entities,
+5. Перевірити ручний/плановий `preview`: всі події, хронологію, посилання на найраніший допис, поділ, entities,
    відсутність insert/guards і cleanup. За потреби ручного publish використовувати `prepare`.
 6. У тестовому destination перевірити серію, receipts, N confirmed rows і cache cleanup.
 7. Виконати fault-injection/backup restore та стендовий прогін, заповнити звіт.
@@ -39,9 +40,11 @@ Idle disconnect і очікування cutoff — нормальна робот
 ## Операції CLI
 
 Зберігаються інтерфейси v4 §22: validate-config, login, dialogs, doctor,
-schedule, schedule-diff, ai-check, migrate-config, status, preview, publish,
+schedule, schedule-diff, ai-check, status, preview, publish,
 reconcile, cache-status, cache-clean, reload-config, backup, healthcheck.
-Додається `prepare --profile ... --window-end ...`, що повертає ID збереженої серії.
+Додається `prepare --channel ... --window-end ...`, що повертає ID збереженої серії.
+`migrate-config` не потрібен (D-021). Параметр `--profile` у командах v4 читати як
+`--channel <id цільового каналу>`; точні імена опцій фіксуються в CLI schema.
 
 `status` має показувати digest window, N, committed parts, першу unresolved
 частину, cutoff/TTL та блокування наступного випуску. `reconcile` перевіряє всі
@@ -57,14 +60,15 @@ Online-команди працюють через worker socket; login/offline-�
 | --- | --- |
 | `AUTH_REQUIRED` | Зупинити Telegram-операції; інтерактивно відновити сесію, без циклу кодів |
 | FloodWait | Поважати durable `pause_until`; restart не скидає очікування |
-| OpenAI quota/credits exhausted | Діагностика balance/limits, явний fallback; без сліпого retry |
-| AI rate limit / мережевий збій | Bounded backoff у межах бюджету/deadline |
-| Частина `uncertain` | Reconcile pinned destination за marker/hash; не надсилати наступну частину |
+| OpenAI quota/credits exhausted | Діагностика balance/limits; випуск не публікується, alert; без сліпого retry |
+| AI rate limit / мережевий збій | Bounded backoff у межах бюджету/deadline; далі пропуск випуску й alert |
+| Частина `uncertain` | Reconcile pinned цільового каналу за часом публікації (D-017); не надсилати наступну частину |
 | Ack є, БД не записалася | Відновити confirmed row, не повторювати send |
 | Частково доставлена серія, кеш збережено | Продовжити незмінний план із непідтвердженої частини |
 | Кеш втрачено/прострочено після send | Hold та звірка; інша регенерована решта автоматично не надсилається |
 | Несправний диск/state/checksum | Publication hold, відновлення; не обнуляти guards/budgets |
-| Недоступне джерело/низький coverage | Явний partial/status за погодженою політикою, не «новин немає» |
+| Недоступне джерело/сайт, низький coverage | Публікується прочитане; `partial` і причина — лише в журналі/`/state` (D-019) |
+| Немає новин за вікно | Нічого не публікується, результат `empty` (D-012) |
 
 Операторське закриття partial серії не видаляє доставлені повідомлення й не
 позначає unsent частини як published. Потрібен безконтентний аудит рішення.

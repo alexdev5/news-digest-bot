@@ -31,3 +31,6 @@ docker compose -f docker-compose.prod.yml --profile worker exec -T app \
 
 9. Запуск локально.
 .\run.cmd run-window --channel news_digest_ua --from "2026-11-11T09:00:00+02:00" --to "2026-11-11T21:00:00+02:00" --ignore-published
+
+10. Вивести канали на які підписаний
+\run.cmd dialogs

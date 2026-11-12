@@ -539,3 +539,24 @@ async def test_bundle_with_unprocessed_rest_is_not_marked_used() -> None:
         "d" * 64, "news", T0, T0, result.events, parts, unfinished=result.unfinished_refs
     )
     assert plan.parts[0].items and plan.parts[0].source_message_ids == ()
+
+
+def test_prompts_forbid_reporting_phrases_d039() -> None:
+    from newsdigest.ai.prompts import SYSTEM_INSTRUCTIONS
+
+    guide = (Path(__file__).resolve().parents[2] / "config/prompts/news-ua.md").read_text(
+        encoding="utf-8"
+    )
+    for text in (SYSTEM_INSTRUCTIONS, guide):
+        assert "23:20 — червоний рівень" in text and "повідомили (про)" in text
+    assert '"за словами Зеленського"' not in SYSTEM_INSTRUCTIONS
+
+
+def test_prompts_require_list_for_long_news_d040() -> None:
+    from newsdigest.ai.prompts import SYSTEM_INSTRUCTIONS
+
+    guide = (Path(__file__).resolve().parents[2] / "config/prompts/news-ua.md").read_text(
+        encoding="utf-8"
+    )
+    assert "is ALWAYS a list" in SYSTEM_INSTRUCTIONS
+    assert "ALWAYS a list" in guide and "енергоострови" in guide

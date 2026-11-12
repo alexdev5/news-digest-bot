@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-PROMPT_VERSION = "group-v8"
+PROMPT_VERSION = "group-v10"
 
 EXCLUSION_REASONS = ("ad", "not_news", "repeat_without_news")
 
@@ -57,9 +57,12 @@ Tasks:
      short_source_chars) without distinct subevents prefer compact: the WHOLE short
      news in title as one paragraph, summary="", bullets=[]. For detailed: title is a
      headline up to ~80 characters and summary adds only facts absent from title;
-   - bullets — [] normally. For several RELATED subevents of one story, one entry
-     {text, candidate_ids} per distinct subevent, with a common headline and
-     summary="". No HTML, Markdown, numbering or bullet markers in text fields;
+   - bullets — a LONG news (source longer than short_source_chars) with two or
+     more separate points is ALWAYS a list: title = the main point, then one entry
+     {text, candidate_ids} per logical point, each a short phrase or sentence,
+     summary="". The same for several related subevents of one story. A short news
+     with one point stays compact, bullets=[]. No HTML, Markdown, numbering or
+     bullet markers in text fields;
    - quote — if a source has an apt question or ironic remark about the essence of
      the news, keep ONE such short excerpt, copied exactly in its original language;
      quote_candidate_id is its candidate. No outer quotation marks and no
@@ -76,19 +79,29 @@ Tasks:
    немає") and never cut off a sentence.
 6. Use only facts from the texts of this event's candidates. Do not add causes,
    consequences or details from your own knowledge. Keep numbers, names, dates,
-   titles and negations exact. Present claims and opinions of people and
-   institutions as claims ("за словами Зеленського", "в ДСНС повідомили").
-   NEVER name Telegram channels or media as sources ("за даними <channel/media>",
-   "як пише <channel/media>", "за твердженням <channel/media>"): the source link is
-   added after each item automatically.
-   A city, person or institution whose name coincides with a source channel's name
-   may still be mentioned. The supplied time is the POST'S PUBLICATION TIME, not
-   proof of when the event happened.
-7. Write factual fields in Ukrainian, neutral tone. A direct quote of a named
-   person may be kept verbatim in its original language, in «» quotes, attributed.
-8. Follow the owner's style guide (channel_prompt) where it does not contradict
+   titles and negations exact.
+7. Write the facts themselves, not that somebody reported them. NEVER use
+   "повідомили (про)", "повідомляли", "знову повідомили", "з'явилися повідомлення",
+   "за словами …", "за даними …", "за твердженням …", "як пише …", "як зазначив …".
+   Bad: "О 23:20 повідомили про червоний рівень тривоги". Good: "23:20 — червоний
+   рівень". Name a person only when the news IS what that person said or did, once,
+   in the title ("Фесенко назвав можливі формати обміну"); the summary then gives
+   the content without "за словами …". Keep uncertainty inside the fact itself
+   ("попередньо", "непідтверджено", "можливо"), not as a reporting phrase.
+   NEVER name Telegram channels or media as sources: the source link is added after
+   each item automatically. A city, person or institution whose name coincides with
+   a source channel's name may still be mentioned.
+8. Never repeat in summary or bullets what the title already says. Title "Повітряна
+   тривога у Дніпровському районі" → bullets "23:20 — червоний рівень", "23:51 —
+   відбій", not "червоний рівень тривоги" or "оголосили відбій тривоги".
+9. Times: the supplied time is the POST'S PUBLICATION TIME. Add a time only when it
+   helps the reader (alerts, a chronology of one night); write it at the start as
+   "HH:MM — <what happened>", without "о" and without a reporting verb.
+10. Write factual fields in Ukrainian, neutral tone. A direct quote of a named person
+   may be kept verbatim in its original language: Зеленський: «…».
+11. Follow the owner's style guide (channel_prompt) where it does not contradict
    these rules.
-9. On retry, `corrections` contains your previous draft and its problems. Edit that
+12. On retry, `corrections` contains your previous draft and its problems. Edit that
    draft to fix them; never exclude a news item instead of fixing it. Also include
    candidates missing from the previous answer.
 

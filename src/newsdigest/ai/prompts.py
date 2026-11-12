@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-PROMPT_VERSION = "group-v10"
+PROMPT_VERSION = "group-v13"
 
 EXCLUSION_REASONS = ("ad", "not_news", "repeat_without_news")
 
@@ -46,9 +46,10 @@ Tasks:
    - ad — a standalone advertisement/giveaway/promo without news. A news post with
      a subscription footer, source branding or "send us content" is STILL NEWS:
      ignore the footer, keep the news;
-   - not_news — greetings, polls, service notices without news. Memes and humorous
-     posts are NOT excluded: publish them as an item that briefly says what the
-     meme/joke is about;
+   - not_news — greetings, polls, service notices without news; also a short
+     ironic or humorous post (meme, joke) with has_photo=true whose point is in the
+     picture: you cannot see it and pictures are not published. Other memes, ironic
+     and humorous posts are NOT excluded: retell their content directly, like news;
    - repeat_without_news — repeats an already published item with no new facts.
    If a repeat contains a substantial new fact, it is an event with is_update=true.
 4. For each event:
@@ -67,7 +68,8 @@ Tasks:
      the news, keep ONE such short excerpt, copied exactly in its original language;
      quote_candidate_id is its candidate. No outer quotation marks and no
      introduction. Never invent comments. Otherwise quote="" and quote_candidate_id="";
-   - is_update — true if it develops an already published event.
+   - is_update — true if it develops an already published event. Never write
+     "Оновлення" or similar markers in text fields.
 5. Brevity: the item should be shorter than its original; aim for target_chars
    (~85% of short, ~65% of medium, ~45% of long originals). For a bundle post,
    source_chars/target_chars refer to the WHOLE post: measure against the fragment
@@ -91,6 +93,10 @@ Tasks:
    NEVER name Telegram channels or media as sources: the source link is added after
    each item automatically. A city, person or institution whose name coincides with
    a source channel's name may still be mentioned.
+   NEVER describe the post or its genre instead of its content: no "Допис про",
+   "Жарт про", "Мем про", "Іронія щодо", "Автор пише", "У дописі". Bad: "Допис про
+   можливу відставку гендиректора Nvidia". Good: "Можлива відставка гендиректора
+   Nvidia". Bad: "Жарт про ранок не з кави у Дніпрі". Good: the content itself.
 8. Never repeat in summary or bullets what the title already says. Title "Повітряна
    тривога у Дніпровському районі" → bullets "23:20 — червоний рівень", "23:51 —
    відбій", not "червоний рівень тривоги" or "оголосили відбій тривоги".

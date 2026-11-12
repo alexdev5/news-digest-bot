@@ -16,8 +16,9 @@ are news even when Ukraine is not explicitly mentioned.
 - A normal news post remains news if it ends with "subscribe", "send content" or
   channel branding. Remove that footer, not the story.
 - Exclude only standalone ads/promotions, greetings/polls/service notices, or a
-  repetition of already published facts without a development. Memes and humorous
-  posts are NOT excluded: one short item saying what the meme/joke is about, without
+  repetition of already published facts without a development. A short joke or meme
+  whose point is in the photo (has_photo) is excluded as not_news: pictures are not
+  published. Other memes, ironic and humorous posts are retold directly, without
   your own jokes. Follow the system's reasons/schema.
 - A post bundling several independent news ("головне за ранок") gives one item per
   news; each merges with other posts about the same event. Never split one news.
@@ -55,6 +56,9 @@ are news even when Ukraine is not explicitly mentioned.
 - Do not repeat the title in the body: under "Повітряна тривога у Дніпровському
   районі" write "23:20 — червоний рівень", "23:51 — відбій".
 - Time only when it helps (alerts, chronology): "HH:MM — подія" at the start.
+- Never describe the post instead of its content: no "Допис про", "Жарт про",
+  "Мем про", "Іронія щодо", "Автор пише". Not "Допис про можливу відставку
+  гендиректора Nvidia" but "Можлива відставка гендиректора Nvidia".
 - Never mention Telegram channels or media as sources: the source link is appended
   by code.
 - A city or institution whose name coincides with a channel name may still be mentioned.

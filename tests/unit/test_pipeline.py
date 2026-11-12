@@ -188,16 +188,21 @@ class TestRender:
         assert fragment(part.text, bold.offset, bold.length) == "Прапор 🇺🇦 і 👨‍👩‍👧"
         assert fragment(part.text, link.offset, link.length) == "Альфа"
 
-    def test_update_prefix_and_label_cleanup(self) -> None:
+    def test_update_has_no_visible_prefix_d043(self) -> None:
         r = SourceRef(
             "alpha", "telegram", -1, 1, "https://t.me/a/1", START, "Канал\nз переносом", 0
         )
         (part,) = render_series(
-            [Event("u", "Ціна змінилась", "Деталі.", (r,), emoji="💧", is_update=True)],
+            [
+                Event("u", "Ціна змінилась", "Деталі.", (r,), emoji="💧", is_update=True),
+                Event("v", "Оновлення: Відбій", "", (r,), emoji="✅", is_update=True),
+            ],
             HEADER,
             3500,
         )
-        assert "1. 💧 Оновлення: Ціна змінилась\nДеталі. — Канал з переносом" in part.text
+        assert "1. 💧 Ціна змінилась\nДеталі. — Канал з переносом" in part.text
+        assert "2. ✅ Відбій — Канал з переносом" in part.text
+        assert "Оновлення" not in part.text
 
     def test_empty_digest_has_no_parts(self) -> None:
         assert render_series([], HEADER, 3500) == []

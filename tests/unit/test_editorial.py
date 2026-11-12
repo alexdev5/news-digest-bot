@@ -445,8 +445,20 @@ def test_post_cannot_be_both_item_and_excluded() -> None:
 def test_memes_are_not_a_reason_to_exclude() -> None:
     from newsdigest.ai.prompts import SYSTEM_INSTRUCTIONS
 
-    assert "Memes and humorous" in SYSTEM_INSTRUCTIONS
+    assert "Other memes, ironic" in SYSTEM_INSTRUCTIONS
     assert "polls, memes" not in SYSTEM_INSTRUCTIONS
+
+
+def test_prompt_forbids_describing_the_post_d041() -> None:
+    from pathlib import Path
+
+    from newsdigest.ai.prompts import SYSTEM_INSTRUCTIONS
+
+    style = Path("config/prompts/news-ua.md").read_text(encoding="utf-8")
+    for text in (SYSTEM_INSTRUCTIONS, style):
+        assert '"Допис про"' in text and '"Жарт про"' in text
+    assert "what the\n     meme/joke is about" not in SYSTEM_INSTRUCTIONS
+    assert "saying what the meme/joke is about" not in style
 
 
 BUNDLE = (
@@ -560,3 +572,26 @@ def test_prompts_require_list_for_long_news_d040() -> None:
     )
     assert "is ALWAYS a list" in SYSTEM_INSTRUCTIONS
     assert "ALWAYS a list" in guide and "енергоострови" in guide
+
+
+# --- D-042: фото не публікуємо; жарт із фото модель виключає -------------------------
+
+
+def test_photo_is_only_a_hint_for_the_model_d042() -> None:
+    from newsdigest.ai.prompts import SYSTEM_INSTRUCTIONS
+    from tests.unit.test_pipeline import TestCandidates, msg
+
+    photo = msg("alpha", 1, 10, "Ранок не з кави.").model_copy(update={"photo": True})
+    album = [
+        msg("beta", 2, 20, "Підпис", grouped_id=7),
+        msg("beta", 3, 20, "", grouped_id=7).model_copy(update={"photo": True}),
+    ]
+    plain = msg("gamma", 4, 30, "Відкрили бібліотеку.")
+    built = TestCandidates().build([photo, *album, plain])
+    flags = {c.text: c.has_photo for c in built.candidates}
+    assert flags == {"Ранок не з кави.": True, "Підпис": True, "Відкрили бібліотеку.": False}
+    payload = build_payload(built.candidates, CONTEXT)["candidates"]
+    assert [c["has_photo"] for c in payload] == [True, True, False]
+    assert "has_photo=true whose point is in the\n     picture" in SYSTEM_INSTRUCTIONS
+    assert "as_is" not in SYSTEM_INSTRUCTIONS
+    assert "as_is" not in response_schema()["properties"]["events"]["items"]["properties"]

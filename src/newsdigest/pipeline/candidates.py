@@ -14,7 +14,7 @@ import hashlib
 import re
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 
 from newsdigest.cache.run_cache import CachedMessage
@@ -53,6 +53,8 @@ class Candidate:
     text: str
     refs: tuple[SourceRef, ...]
     similar_to: tuple[str, ...] = ()
+    has_photo: bool = False
+    """Хоч один допис кандидата має фото (D-042: лише підказка моделі)."""
 
     @property
     def earliest(self) -> datetime:
@@ -138,6 +140,7 @@ def build_candidates(
     patterns = [p.casefold() for p in exclude_patterns]
     result = CandidateSet(candidates=[])
     by_hash: dict[str, tuple[str, list[SourceRef]]] = {}
+    photos: set[str] = set()
     order: list[str] = []
 
     for group in _merge_albums(list(messages)):
@@ -170,6 +173,8 @@ def build_candidates(
             result.record_exclusion("filtered", group)
             continue
         digest = text_hash(text)
+        if any(m.photo for m in group):
+            photos.add(digest)
         if digest in by_hash:
             by_hash[digest][1].extend(refs)
             result.count("exact_duplicate")
@@ -182,6 +187,7 @@ def build_candidates(
             candidate_id=digest[:16],
             text=by_hash[digest][0],
             refs=tuple(sorted(by_hash[digest][1], key=lambda r: (r.date_utc, r.position))),
+            has_photo=digest in photos,
         )
         for digest in order
     ]
@@ -205,6 +211,6 @@ def _with_similarity_hints(candidates: list[Candidate]) -> list[Candidate]:
                 hints[i].append(candidates[j].candidate_id)
                 hints[j].append(candidates[i].candidate_id)
     return [
-        Candidate(c.candidate_id, c.text, c.refs, tuple(hints.get(i, ()))) if i in hints else c
+        replace(c, similar_to=tuple(hints[i])) if i in hints else c
         for i, c in enumerate(candidates)
     ]

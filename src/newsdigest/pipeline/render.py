@@ -27,7 +27,7 @@ from zoneinfo import ZoneInfo
 from newsdigest.pipeline.events import Event, visible_source
 
 ITEM_SEPARATOR = "\n\n"
-UPDATE_PREFIX = "Оновлення: "
+UPDATE_PREFIX = "Оновлення:"
 MONTHS_GENITIVE = (
     "січня",
     "лютого",
@@ -129,8 +129,9 @@ class _Builder:
 def _item(number: int, event: Event) -> _Block:
     source = visible_source(event)
     title = one_line(event.title)
-    if event.is_update and not title.startswith(UPDATE_PREFIX.strip()):
-        title = UPDATE_PREFIX + title
+    # D-043: позначки «Оновлення:» у пості немає; is_update лишається лише в метаданих.
+    if title.startswith(UPDATE_PREFIX):
+        title = title[len(UPDATE_PREFIX) :].strip() or title
     emoji = one_line(event.emoji)
     summary = "\n\n".join(one_line(p) for p in event.summary.split("\n\n") if p.strip())
 

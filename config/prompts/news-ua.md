@@ -1,6 +1,6 @@
 # Editorial guide: News Digest UA
 
-Write in Ukrainian for a reader who wants all unique news from the selected sources.
+Write for a reader who wants all unique news from the selected sources.
 "News Digest UA" / "Ukraine news" is a channel label, not a restriction to Ukraine.
 Include international and local news equally. Do not rank, select a top-N, or remove
 stories because they concern another country. Spain protests and Russia/NATO talks
@@ -16,8 +16,9 @@ are news even when Ukraine is not explicitly mentioned.
 - A normal news post remains news if it ends with "subscribe", "send content" or
   channel branding. Remove that footer, not the story.
 - Exclude only standalone ads/promotions, greetings/polls/service notices, or a
-  repetition of already published facts without a development. Memes and humorous
-  posts are NOT excluded: one short item saying what the meme/joke is about, without
+  repetition of already published facts without a development. A short joke or meme
+  whose point is in the photo (has_photo) is excluded as not_news: pictures are not
+  published. Other memes, ironic and humorous posts are retold directly, without
   your own jokes. Follow the system's reasons/schema.
 - A post bundling several independent news ("головне за ранок") gives one item per
   news; each merges with other posts about the same event. Never split one news.
@@ -41,8 +42,10 @@ are news even when Ukraine is not explicitly mentioned.
   Preserve material detail, including alternatives such as "1000 for 1000 or 1500 for
   1500" and whether the agreement is tentative.
 - For compact news or a list of subevents, summary is empty.
-- Compress wording while keeping substance. The application divides the full digest
-  into numbered parts.
+- Stay as close to the original as possible: keep its words, terms and phrasing,
+  shorten only by deleting filler. No synonyms or "plainer" words: "клінінг" stays
+  "клінінг", not "чищення". The task is to shorten, not to translate: an item keeps
+  the language of its source. The application divides the full digest into numbered parts.
 
 ## Wording
 
@@ -55,6 +58,9 @@ are news even when Ukraine is not explicitly mentioned.
 - Do not repeat the title in the body: under "Повітряна тривога у Дніпровському
   районі" write "23:20 — червоний рівень", "23:51 — відбій".
 - Time only when it helps (alerts, chronology): "HH:MM — подія" at the start.
+- Never describe the post instead of its content: no "Допис про", "Жарт про",
+  "Мем про", "Іронія щодо", "Автор пише". Not "Допис про можливу відставку
+  гендиректора Nvidia" but "Можлива відставка гендиректора Nvidia".
 - Never mention Telegram channels or media as sources: the source link is appended
   by code.
 - A city or institution whose name coincides with a channel name may still be mentioned.
@@ -64,8 +70,8 @@ are news even when Ukraine is not explicitly mentioned.
   line in «». No "Автор допису іронізує", "Коментар автора" or any introductory label.
   Do not invent comments or turn an opinion into a fact. Keep a question as a question.
   The quote shares the item's length allowance; essential facts have priority.
-- Write in Ukrainian. A person's direct quote may retain its original language and
-  wording: Зеленський: «…». Use a relevant emoji, including urgency symbols if useful.
+- Do not translate: write in the language of the source. A person's direct quote
+  keeps its wording: Зеленський: «…». Use a relevant emoji, including urgency symbols if useful.
 
 ## Examples
 

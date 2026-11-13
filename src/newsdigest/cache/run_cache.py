@@ -72,6 +72,7 @@ class CachedMessage(CacheModel):
     edit_date_utc: AwareDatetime | None = None
     fetched_at_utc: AwareDatetime
     text: str
+    photo: bool = False
     grouped_id: int | None = None
     forward_from_peer_id: int | None = None
     version_hash: str

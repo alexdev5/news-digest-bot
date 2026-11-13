@@ -208,6 +208,7 @@ class HistoryScanner:
                         edit_date_utc=message.edit_date_utc,
                         fetched_at_utc=fetched_at,
                         text=message.text,
+                        photo=message.photo,
                         grouped_id=message.grouped_id,
                         forward_from_peer_id=message.forward_from_peer_id,
                         version_hash=version_hash(message),

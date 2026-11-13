@@ -164,6 +164,7 @@ def build_payload(
                 "time": f"{c.earliest.astimezone(tz):%d.%m %H:%M}",
                 "text": c.text,
                 "similar_to": list(c.similar_to),
+                "has_photo": c.has_photo,
                 "source_chars": budgets[c.candidate_id],
                 "target_chars": target_chars(budgets[c.candidate_id]),
             }

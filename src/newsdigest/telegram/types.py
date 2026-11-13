@@ -56,6 +56,8 @@ class RawMessage:
     text: str
     is_service: bool = False
     has_media: bool = False
+    photo: bool = False
+    """Допис має фото (D-042: підказка моделі, саме фото не читається)."""
     grouped_id: int | None = None
     forward_from_peer_id: int | None = None
 

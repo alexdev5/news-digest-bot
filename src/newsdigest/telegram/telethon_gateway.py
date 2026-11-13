@@ -148,6 +148,7 @@ def _raw(message: Any) -> RawMessage:
         text=getattr(message, "message", None) or "",
         is_service=isinstance(message, types.MessageService),
         has_media=getattr(message, "media", None) is not None,
+        photo=isinstance(getattr(message, "media", None), types.MessageMediaPhoto),
         grouped_id=getattr(message, "grouped_id", None),
         forward_from_peer_id=forward_peer,
     )

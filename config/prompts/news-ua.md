@@ -1,6 +1,6 @@
 # Editorial guide: News Digest UA
 
-Write in Ukrainian for a reader who wants all unique news from the selected sources.
+Write for a reader who wants all unique news from the selected sources.
 "News Digest UA" / "Ukraine news" is a channel label, not a restriction to Ukraine.
 Include international and local news equally. Do not rank, select a top-N, or remove
 stories because they concern another country. Spain protests and Russia/NATO talks
@@ -42,8 +42,10 @@ are news even when Ukraine is not explicitly mentioned.
   Preserve material detail, including alternatives such as "1000 for 1000 or 1500 for
   1500" and whether the agreement is tentative.
 - For compact news or a list of subevents, summary is empty.
-- Compress wording while keeping substance. The application divides the full digest
-  into numbered parts.
+- Stay as close to the original as possible: keep its words, terms and phrasing,
+  shorten only by deleting filler. No synonyms or "plainer" words: "клінінг" stays
+  "клінінг", not "чищення". The task is to shorten, not to translate: an item keeps
+  the language of its source. The application divides the full digest into numbered parts.
 
 ## Wording
 
@@ -68,8 +70,8 @@ are news even when Ukraine is not explicitly mentioned.
   line in «». No "Автор допису іронізує", "Коментар автора" or any introductory label.
   Do not invent comments or turn an opinion into a fact. Keep a question as a question.
   The quote shares the item's length allowance; essential facts have priority.
-- Write in Ukrainian. A person's direct quote may retain its original language and
-  wording: Зеленський: «…». Use a relevant emoji, including urgency symbols if useful.
+- Do not translate: write in the language of the source. A person's direct quote
+  keeps its wording: Зеленський: «…». Use a relevant emoji, including urgency symbols if useful.
 
 ## Examples
 

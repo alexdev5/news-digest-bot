@@ -449,6 +449,21 @@ def test_memes_are_not_a_reason_to_exclude() -> None:
     assert "polls, memes" not in SYSTEM_INSTRUCTIONS
 
 
+def test_prompt_keeps_original_wording_d044() -> None:
+    from pathlib import Path
+
+    from newsdigest.ai.prompts import SYSTEM_INSTRUCTIONS
+
+    style = Path("config/prompts/news-ua.md").read_text(encoding="utf-8")
+    for text in (SYSTEM_INSTRUCTIONS, style):
+        assert "close to the original as possible" in text
+        assert '"клінінг"' in text and '"чищення"' in text
+    assert "Compress wording" not in style
+    assert "not to translate" in SYSTEM_INSTRUCTIONS and "not to translate" in style
+    assert "Ukrainian-language" not in SYSTEM_INSTRUCTIONS
+    assert "Write in Ukrainian" not in style
+
+
 def test_prompt_forbids_describing_the_post_d041() -> None:
     from pathlib import Path
 

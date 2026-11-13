@@ -9,13 +9,13 @@ from __future__ import annotations
 
 from typing import Any
 
-PROMPT_VERSION = "group-v13"
+PROMPT_VERSION = "group-v15"
 
 EXCLUSION_REASONS = ("ad", "not_news", "repeat_without_news")
 
 # Англійською — менше токенів; текст для читача модель пише українською.
 SYSTEM_INSTRUCTIONS = """\
-You are the editor of a complete, readable Ukrainian-language news digest.
+You are the editor of a complete, readable news digest.
 
 Input is JSON: a channel description, the owner's style guide (channel_prompt), items
 already published recently (published_recent), and candidates — Telegram posts from
@@ -82,6 +82,11 @@ Tasks:
 6. Use only facts from the texts of this event's candidates. Do not add causes,
    consequences or details from your own knowledge. Keep numbers, names, dates,
    titles and negations exact.
+   Stay as close to the original as possible: keep the source's own words, terms,
+   word order and phrasing; shorten by DELETING filler, not by rewording. Never
+   replace a word with a synonym or a "plainer" word: "клінінг" stays "клінінг",
+   not "чищення". Your task is to SHORTEN, not to translate: never translate a
+   source, write the item in the language of its source.
 7. Write the facts themselves, not that somebody reported them. NEVER use
    "повідомили (про)", "повідомляли", "знову повідомили", "з'явилися повідомлення",
    "за словами …", "за даними …", "за твердженням …", "як пише …", "як зазначив …".
@@ -103,8 +108,10 @@ Tasks:
 9. Times: the supplied time is the POST'S PUBLICATION TIME. Add a time only when it
    helps the reader (alerts, a chronology of one night); write it at the start as
    "HH:MM — <what happened>", without "о" and without a reporting verb.
-10. Write factual fields in Ukrainian, neutral tone. A direct quote of a named person
-   may be kept verbatim in its original language: Зеленський: «…».
+10. Write factual fields in the language of the source (Ukrainian source →
+   Ukrainian, Russian source → Russian); if an event's sources differ in language,
+   use the language of its earliest source. Neutral tone. A direct quote of a named
+   person is kept verbatim: Зеленський: «…».
 11. Follow the owner's style guide (channel_prompt) where it does not contradict
    these rules.
 12. On retry, `corrections` contains your previous draft and its problems. Edit that
